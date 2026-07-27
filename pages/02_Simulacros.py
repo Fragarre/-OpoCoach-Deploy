@@ -85,23 +85,67 @@ st.subheader(
     f'{convocatoria["codigo"]} — {convocatoria["puesto"]}'
 )
 
-columna_crear, columna_progreso = st.columns(
-    [1.1, 2.9],
+ORIGENES_DISPONIBLES = ["A1", "A2", "C1", "C2"]
+CLAVE_ORIGENES = f"origenes_simulacro_{convocatoria_id}"
+
+if CLAVE_ORIGENES not in st.session_state:
+    st.session_state[CLAVE_ORIGENES] = ORIGENES_DISPONIBLES.copy()
+
+origenes_seleccionados = st.session_state[CLAVE_ORIGENES]
+
+if len(origenes_seleccionados) == len(ORIGENES_DISPONIBLES):
+    etiqueta_origen = "Origen: Todos"
+elif len(origenes_seleccionados) == 1:
+    etiqueta_origen = f"Origen: {origenes_seleccionados[0]}"
+else:
+    etiqueta_origen = (
+        f"Origen: {len(origenes_seleccionados)} seleccionados"
+    )
+
+columna_origen, columna_crear, columna_progreso = st.columns(
+    [1.2, 1.5, 2.3],
     vertical_alignment="center",
 )
+
+with columna_origen.popover(
+    etiqueta_origen,
+    use_container_width=True,
+):
+    st.multiselect(
+        "Procedencia de las preguntas",
+        options=ORIGENES_DISPONIBLES,
+        key=CLAVE_ORIGENES,
+        help=(
+            "Las preguntas sin origen asignado se incorporan siempre "
+            "y no aparecen en esta selección."
+        ),
+    )
+
+sin_origen_seleccionado = not origenes_seleccionados
 
 if columna_crear.button(
     "Crear simulacro de prueba",
     type="primary",
     use_container_width=True,
+    disabled=sin_origen_seleccionado,
+    help=(
+        "Seleccione al menos un origen."
+        if sin_origen_seleccionado
+        else None
+    ),
 ):
-    simulacro_id = crear_simulacro(convocatoria_id)
-
-    st.success(
-        f"Simulacro {simulacro_id} creado correctamente."
-    )
-
-    st.rerun()
+    try:
+        simulacro_id = crear_simulacro(
+            convocatoria_id=convocatoria_id,
+            origenes_seleccionados=origenes_seleccionados,
+        )
+    except ValueError as exc:
+        st.error(str(exc))
+    else:
+        st.success(
+            f"Simulacro {simulacro_id} creado correctamente."
+        )
+        st.rerun()
 
 contenedor_progreso = columna_progreso.empty()
 

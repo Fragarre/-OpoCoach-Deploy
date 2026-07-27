@@ -1,11 +1,11 @@
 """
 ==============================================================================
 OpoCoach
-Archivo: pages/03_Chat.py
+Archivo: pages/04_Chat.py
 ==============================================================================
 
 Descripción:
-    Chat especializado en la convocatoria activa.
+    Chat de la convocatoria y chat de conocimiento general.
 
 ==============================================================================
 """
@@ -17,7 +17,7 @@ from lib.contexto import obtener_contexto
 from lib.sesion import obtener_convocatoria_id
 
 
-st.title("Chat de la convocatoria")
+st.title("Chat")
 
 convocatoria_id = obtener_convocatoria_id()
 
@@ -38,34 +38,66 @@ st.caption(
     f'{contexto["puesto"]}'
 )
 
-st.info(
-    "El chat responde únicamente con el corpus asignado "
-    "a la convocatoria activa."
+opciones_modo = {
+    "Convocatoria y OpoCoach": "CONVOCATORIA",
+    "Conocimiento general de GPT": "GENERAL",
+}
+
+etiqueta_modo = st.radio(
+    "Modo de consulta",
+    options=list(opciones_modo),
+    horizontal=True,
+    key="chat_modo_etiqueta",
 )
 
+modo = opciones_modo[etiqueta_modo]
+
+if modo == "CONVOCATORIA":
+    st.info(
+        "Las respuestas se limitan al corpus de la convocatoria "
+        "activa y a la base de conocimiento de OpoCoach."
+    )
+    texto_entrada = (
+        "Escriba una duda sobre la convocatoria o sobre OpoCoach..."
+    )
+    texto_spinner = "Consultando las fuentes disponibles..."
+else:
+    st.warning(
+        "Este modo utiliza conocimiento general de GPT. Sus respuestas "
+        "pueden incluir información ajena al temario y no están "
+        "respaldadas por el corpus de la convocatoria."
+    )
+    texto_entrada = "Escriba una pregunta de conocimiento general..."
+    texto_spinner = "Generando una respuesta de conocimiento general..."
+
 clave_convocatoria_chat = "chat_convocatoria_id"
-clave_mensajes = "chat_convocatoria_mensajes"
 
 if (
     st.session_state.get(clave_convocatoria_chat)
     != convocatoria_id
 ):
     st.session_state[clave_convocatoria_chat] = convocatoria_id
-    st.session_state[clave_mensajes] = []
+    st.session_state["chat_mensajes_convocatoria"] = []
+    st.session_state["chat_mensajes_general"] = []
+
+clave_mensajes = (
+    "chat_mensajes_convocatoria"
+    if modo == "CONVOCATORIA"
+    else "chat_mensajes_general"
+)
 
 mensajes = st.session_state.setdefault(
     clave_mensajes,
     [],
 )
 
-columna_limpiar, columna_espacio = st.columns(
-    [1, 4]
-)
+columna_limpiar, columna_espacio = st.columns([1, 4])
 
 with columna_limpiar:
     if st.button(
         "Limpiar conversación",
         use_container_width=True,
+        key=f"limpiar_chat_{modo.lower()}",
     ):
         st.session_state[clave_mensajes] = []
         st.rerun()
@@ -79,9 +111,7 @@ for mensaje in mensajes:
     with st.chat_message(rol):
         st.markdown(mensaje.get("content", ""))
 
-pregunta = st.chat_input(
-    "Escriba una duda sobre la convocatoria..."
-)
+pregunta = st.chat_input(texto_entrada)
 
 if pregunta:
     pregunta_limpia = " ".join(pregunta.split())
@@ -98,14 +128,13 @@ if pregunta:
             st.markdown(pregunta_limpia)
 
         with st.chat_message("assistant"):
-            with st.spinner(
-                "Consultando el corpus de la convocatoria..."
-            ):
+            with st.spinner(texto_spinner):
                 try:
                     resultado = responder_chat(
                         convocatoria_id=convocatoria_id,
                         pregunta=pregunta_limpia,
                         mensajes_previos=mensajes[:-1],
+                        modo=modo,
                     )
 
                     respuesta = resultado["respuesta"]

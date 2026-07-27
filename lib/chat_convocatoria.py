@@ -33,14 +33,20 @@ import unicodedata
 from dataclasses import dataclass
 from typing import Any
 
+from lib.conocimiento_opocoach import (
+    ENTRADAS_CONOCIMIENTO_OPOCOACH,
+    EntradaConocimientoOpoCoach,
+)
 from lib.database import conectar
 from tools.openai_api import seleccionar_fragmento
 
 
 MODELO_PREDETERMINADO = "gpt-5.4-mini"
 OPERACION_IA = "chat_convocatoria"
+OPERACION_IA_GENERAL = "chat_conocimiento_general"
 
 MAX_FRAGMENTOS = 8
+MAX_FRAGMENTOS_APLICACION = 4
 MAX_CARACTERES_CONTEXTO = 30_000
 
 PALABRAS_VACIAS = {
@@ -66,6 +72,14 @@ class FragmentoCorpus:
     articulo_solicitado: str
     articulo_boe: str
     titulo_bloque: str
+    texto: str
+    puntuacion: float
+
+
+@dataclass(frozen=True)
+class FragmentoAplicacion:
+    clave: str
+    titulo: str
     texto: str
     puntuacion: float
 
@@ -361,6 +375,121 @@ def buscar_fragmentos(
     return seleccionados
 
 
+
+def _puntuar_entrada_aplicacion(
+    entrada: EntradaConocimientoOpoCoach,
+    pregunta: str,
+    historial_usuario: list[str],
+) -> float:
+    pregunta_normalizada = _normalizar(pregunta)
+    terminos_pregunta = _terminos(pregunta)
+    historial_reciente = " ".join(historial_usuario[-3:])
+    terminos_historial = _terminos(historial_reciente)
+
+    titulo = _normalizar(entrada.titulo)
+    palabras_clave = " ".join(
+        _normalizar(valor)
+        for valor in entrada.palabras_clave
+    )
+    texto = _normalizar(entrada.texto)
+
+    terminos_metadatos = _terminos(
+        titulo + " " + palabras_clave
+    )
+    terminos_texto = _terminos(texto)
+
+    coincidencias_metadatos = (
+        terminos_pregunta & terminos_metadatos
+    )
+    coincidencias_texto = terminos_pregunta & terminos_texto
+
+    puntuacion = 0.0
+    puntuacion += 12.0 * len(coincidencias_metadatos)
+    puntuacion += 2.0 * len(coincidencias_texto)
+    puntuacion += 1.0 * len(
+        terminos_historial & terminos_metadatos
+    )
+    puntuacion += 0.25 * len(
+        terminos_historial & terminos_texto
+    )
+
+    for expresion in entrada.palabras_clave:
+        expresion_normalizada = _normalizar(expresion)
+        if (
+            expresion_normalizada
+            and expresion_normalizada in pregunta_normalizada
+        ):
+            puntuacion += 35.0
+
+    return puntuacion
+
+
+def buscar_fragmentos_aplicacion(
+    pregunta: str,
+    historial_usuario: list[str] | None = None,
+    max_fragmentos: int = MAX_FRAGMENTOS_APLICACION,
+) -> list[FragmentoAplicacion]:
+    pregunta_limpia = " ".join(str(pregunta or "").split())
+
+    if not pregunta_limpia:
+        return []
+
+    historial = historial_usuario or []
+    puntuados: list[FragmentoAplicacion] = []
+
+    for entrada in ENTRADAS_CONOCIMIENTO_OPOCOACH:
+        puntuacion = _puntuar_entrada_aplicacion(
+            entrada=entrada,
+            pregunta=pregunta_limpia,
+            historial_usuario=historial,
+        )
+
+        # Evita incorporar el manual por coincidencias demasiado débiles.
+        if puntuacion < 18.0:
+            continue
+
+        puntuados.append(
+            FragmentoAplicacion(
+                clave=entrada.clave,
+                titulo=entrada.titulo,
+                texto=entrada.texto,
+                puntuacion=puntuacion,
+            )
+        )
+
+    puntuados.sort(
+        key=lambda elemento: (
+            -elemento.puntuacion,
+            elemento.titulo,
+        )
+    )
+
+    return puntuados[:max_fragmentos]
+
+
+def _crear_contexto_aplicacion(
+    fragmentos: list[FragmentoAplicacion],
+    indice_inicial: int,
+) -> str:
+    bloques: list[str] = []
+
+    for desplazamiento, fragmento in enumerate(fragmentos):
+        indice = indice_inicial + desplazamiento
+        bloques.append(
+            "\n".join(
+                [
+                    f"[FUENTE {indice} — FUNCIONAMIENTO OPOCOACH]",
+                    f"Apartado: {fragmento.titulo}",
+                    "Texto:",
+                    fragmento.texto,
+                ]
+            )
+        )
+
+    return "\n\n".join(bloques)
+
+
+
 def _crear_contexto(
     fragmentos: list[FragmentoCorpus],
 ) -> str:
@@ -373,7 +502,7 @@ def _crear_contexto(
         bloques.append(
             "\n".join(
                 [
-                    f"[FUENTE {indice}]",
+                    f"[FUENTE {indice} — CORPUS CONVOCATORIA]",
                     (
                         f"Tema: {fragmento.parte} "
                         f"{fragmento.numero_tema}. "
@@ -419,12 +548,85 @@ def _crear_historial(
     return "\n".join(lineas)
 
 
+def responder_chat_general(
+    pregunta: str,
+    mensajes_previos: list[dict[str, str]] | None = None,
+    modelo: str = MODELO_PREDETERMINADO,
+) -> dict[str, Any]:
+    pregunta_limpia = " ".join(str(pregunta or "").split())
+
+    if not pregunta_limpia:
+        raise ValueError("La pregunta está vacía.")
+
+    mensajes = mensajes_previos or []
+    historial = _crear_historial(mensajes)
+
+    instrucciones = """
+Eres el asistente general de OpoCoach.
+
+En este modo puedes responder utilizando tu conocimiento general. La respuesta
+no está limitada al corpus de la convocatoria ni a la base de conocimiento de
+OpoCoach.
+
+Reglas obligatorias:
+- Responde en español.
+- Sé claro, directo y proporcionado a la pregunta.
+- No presentes como contenido oficial de la convocatoria aquello que proceda
+  de conocimiento general.
+- No afirmes que una respuesta está respaldada por el corpus o por el temario.
+- Cuando la pregunta sea jurídica, indica que se trata de una explicación
+  general y que debe contrastarse con la normativa vigente y con el corpus de
+  la convocatoria.
+- No des asesoramiento jurídico personalizado para casos reales.
+- Si la información puede depender de datos actuales y no puedes comprobarlos,
+  advierte de esa limitación.
+- Al final añade exactamente esta línea:
+  Fuente: conocimiento general de GPT; respuesta no limitada al corpus de la convocatoria.
+""".strip()
+
+    prompt = (
+        instrucciones
+        + "\n\nHISTORIAL RECIENTE:\n"
+        + (historial or "(sin historial)")
+        + "\n\nPREGUNTA ACTUAL:\n"
+        + pregunta_limpia
+    )
+
+    respuesta = seleccionar_fragmento(
+        prompt=prompt,
+        modelo=modelo,
+        operacion=OPERACION_IA_GENERAL,
+    ).strip()
+
+    return {
+        "respuesta": respuesta,
+        "fuentes": [],
+        "modelo": modelo,
+        "modo": "GENERAL",
+    }
+
+
 def responder_chat(
     convocatoria_id: int,
     pregunta: str,
     mensajes_previos: list[dict[str, str]] | None = None,
     modelo: str = MODELO_PREDETERMINADO,
+    modo: str = "CONVOCATORIA",
 ) -> dict[str, Any]:
+    modo_normalizado = str(modo or "CONVOCATORIA").strip().upper()
+
+    if modo_normalizado == "GENERAL":
+        return responder_chat_general(
+            pregunta=pregunta,
+            mensajes_previos=mensajes_previos,
+            modelo=modelo,
+        )
+
+    if modo_normalizado != "CONVOCATORIA":
+        raise ValueError(
+            "El modo debe ser CONVOCATORIA o GENERAL."
+        )
+
     pregunta_limpia = " ".join(str(pregunta or "").split())
 
     if not pregunta_limpia:
@@ -444,44 +646,71 @@ def responder_chat(
         historial_usuario=historial_usuario,
     )
 
-    if not fragmentos:
+    fragmentos_aplicacion = buscar_fragmentos_aplicacion(
+        pregunta=pregunta_limpia,
+        historial_usuario=historial_usuario,
+    )
+
+    if not fragmentos and not fragmentos_aplicacion:
         return {
             "respuesta": (
                 "No he encontrado información suficiente en el corpus "
-                "asignado a esta convocatoria para responder con seguridad."
+                "asignado a esta convocatoria ni en la base de conocimiento "
+                "de OpoCoach para responder con seguridad."
             ),
             "fuentes": [],
             "modelo": None,
         }
 
-    contexto = _crear_contexto(fragmentos)
+    bloques_contexto: list[str] = []
+
+    if fragmentos:
+        bloques_contexto.append(_crear_contexto(fragmentos))
+
+    if fragmentos_aplicacion:
+        bloques_contexto.append(
+            _crear_contexto_aplicacion(
+                fragmentos_aplicacion,
+                indice_inicial=len(fragmentos) + 1,
+            )
+        )
+
+    contexto = "\n\n".join(bloques_contexto)
     historial = _crear_historial(mensajes)
 
     instrucciones = """
-Eres el asistente especializado de una convocatoria de oposiciones.
+Eres el asistente especializado de OpoCoach y de la convocatoria activa.
 
 Debes responder exclusivamente con la información contenida en las FUENTES
-proporcionadas y dentro del ámbito de la convocatoria activa.
+proporcionadas. Las fuentes pueden ser de dos tipos:
+- CORPUS CONVOCATORIA: contenido normativo o de estudio de la convocatoria.
+- FUNCIONAMIENTO OPOCOACH: explicaciones sobre el uso de la aplicación.
 
 Puedes:
 - aclarar conceptos;
 - explicar artículos y normas con lenguaje más claro;
+- explicar cómo funciona OpoCoach y cómo interpretar sus elementos;
 - poner ejemplos didácticos coherentes con las fuentes;
 - ampliar una explicación anterior;
-- relacionar varias fuentes recuperadas.
+- relacionar varias fuentes recuperadas cuando resulte necesario.
 
 Reglas obligatorias:
 - No uses conocimiento externo.
 - No inventes contenido ausente.
 - No afirmes que una fuente dice algo que no aparece en ella.
 - Si las fuentes no bastan, indícalo expresamente.
-- Si la pregunta es ajena a la convocatoria, recházala brevemente.
+- Si la pregunta es ajena a la convocatoria y al funcionamiento de OpoCoach,
+  recházala brevemente.
 - Distingue con claridad el contenido normativo de los ejemplos explicativos.
 - No des asesoramiento jurídico para casos reales.
 - Responde en español.
 - Sé claro, directo y proporcionado a la pregunta.
-- Al final añade una línea breve titulada "Fuentes consultadas:" con las
-  referencias de norma y artículo realmente utilizadas.
+- Cuando el usuario pregunte cómo realizar una acción dentro de OpoCoach,
+  responde primero con los pasos concretos indicados en las fuentes; no te
+  limites a describir la función o el contenido del elemento.
+- Al final añade una línea breve titulada "Fuentes consultadas:". Para fuentes
+  normativas, indica norma y artículo. Para fuentes de funcionamiento, indica
+  "Manual de OpoCoach" y el nombre del apartado realmente utilizado.
 """.strip()
 
     prompt = (
@@ -490,7 +719,7 @@ Reglas obligatorias:
         + (historial or "(sin historial)")
         + "\n\nPREGUNTA ACTUAL:\n"
         + pregunta_limpia
-        + "\n\nFUENTES DEL CORPUS:\n"
+        + "\n\nFUENTES DISPONIBLES:\n"
         + contexto
     )
 
@@ -502,6 +731,7 @@ Reglas obligatorias:
 
     fuentes = [
         {
+            "tipo": "CORPUS_CONVOCATORIA",
             "tema": (
                 f"{fragmento.parte} "
                 f"{fragmento.numero_tema}"
@@ -514,8 +744,18 @@ Reglas obligatorias:
         for fragmento in fragmentos
     ]
 
+    fuentes.extend(
+        {
+            "tipo": "FUNCIONAMIENTO_OPOCOACH",
+            "clave": fragmento.clave,
+            "titulo": fragmento.titulo,
+        }
+        for fragmento in fragmentos_aplicacion
+    )
+
     return {
         "respuesta": respuesta,
         "fuentes": fuentes,
         "modelo": modelo,
+        "modo": "CONVOCATORIA",
     }

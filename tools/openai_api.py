@@ -265,3 +265,21 @@ def generar_explicacion_ia(
         modelo=modelo,
         operacion="explicacion",
     )
+
+
+def generar_analisis_rendimiento_ia(
+    prompt,
+    modelo="gpt-5.4-mini",
+):
+    """
+    Genera el comentario interpretativo del rendimiento acumulado.
+
+    Esta función es aditiva y reutiliza la llamada central existente sin
+    modificar el comportamiento de ninguna otra operación de OpenAI.
+    """
+
+    return seleccionar_fragmento(
+        prompt=prompt,
+        modelo=modelo,
+        operacion="analisis_rendimiento",
+    )

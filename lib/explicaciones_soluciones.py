@@ -4,7 +4,7 @@ OpoCoach
 Archivo: lib/explicaciones_soluciones.py
 ==============================================================================
 
-Genera comentarios breves para el PDF de soluciones.
+Genera comentarios explicativos para el PDF de soluciones.
 
 Lee:
     - usuario.sqlite3:
@@ -49,43 +49,52 @@ INSTRUCCIONES = """
 Eres preparador de oposiciones.
 
 La respuesta correcta de cada pregunta ya está determinada. No debes resolver
-la pregunta ni cuestionar la respuesta indicada.
+la pregunta de nuevo ni cuestionar la respuesta indicada.
 
-Para cada elemento recibido, redacta una explicación jurídica clara de por qué
-la opción indicada es correcta, utilizando exclusivamente el texto de la fuente
-proporcionada.
+Recibirás preguntas de dos tipos: JURIDICA e INFORMATICA. Redacta un comentario
+claro que explique por qué la opción indicada es correcta.
 
-Reglas obligatorias:
+REGLAS PARA PREGUNTAS JURIDICAS:
+- Utiliza exclusivamente la norma, el artículo y el texto de la fuente aportada.
 - Comienza identificando expresamente la norma y el artículo aplicables.
 - Usa una fórmula natural, por ejemplo:
   "Según el artículo 96 de la Ley 39/2015, ..."
-- Explica después la regla concreta del precepto que permite reconocer la
-  respuesta correcta.
+- Explica la regla concreta del precepto que permite reconocer la respuesta.
 - Señala el elemento decisivo: plazo, órgano competente, requisito, excepción,
   efecto jurídico, definición o procedimiento.
 - Cuando aporte valor, indica brevemente por qué las restantes opciones no
   encajan con la regla del artículo, sin analizarlas una por una.
-- No te limites a afirmar que la respuesta coincide con el precepto: explica
-  cuál es la regla aplicable.
-- No copies extensamente el texto de la fuente.
-- No repitas el enunciado ni reproduzcas las opciones.
+- No uses conocimiento jurídico externo ni completes información ausente.
+
+REGLAS PARA PREGUNTAS INFORMATICAS:
+- Utiliza el enunciado, las opciones y la respuesta correcta proporcionada.
+- Explica el concepto, función, comando, herramienta o comportamiento técnico
+  que hace correcta esa opción.
+- Puedes usar conocimiento técnico general y estable de informática, sistemas
+  operativos, seguridad, redes y aplicaciones ofimáticas.
+- No inventes versiones, rutas, nombres de menús o detalles que no sean seguros.
+- Cuando una respuesta dependa de una versión concreta y esta no figure en la
+  pregunta, limita la explicación al principio técnico que pueda afirmarse con
+  seguridad.
+- Cuando aporte valor, señala brevemente el error conceptual de las alternativas,
+  sin analizarlas una por una.
+
+REGLAS COMUNES:
+- No te limites a afirmar que la opción es correcta: explica la razón.
+- No repitas el enunciado ni reproduzcas las opciones completas.
 - No escribas "Respuesta A", "Respuesta B", "Respuesta C" o "Respuesta D",
   porque esa indicación ya se añade automáticamente en el PDF.
 - No añadas encabezados, listas, conclusiones ni Markdown.
-- No uses conocimiento externo.
-- No inventes ni completes información ausente.
-- Presta especial atención a negaciones, excepciones, plazos, competencias y
-  expresiones como podrá, deberá, siempre, nunca, únicamente o exclusivamente.
 - Un único párrafo por pregunta.
-- Entre 45 y 100 palabras, salvo que la fuente no permita alcanzar esa extensión
-  sin repetir o inventar información.
+- Entre 40 y 100 palabras, salvo que no sea posible alcanzar esa extensión sin
+  repetir o inventar información.
 - Texto directamente imprimible en el PDF de soluciones.
 
 Devuelve exclusivamente un JSON con esta forma:
 [
   {
     "orden": 1,
-    "comentario": "Según el artículo ... de la norma ..., ..."
+    "comentario": "Explicación de la respuesta correcta."
   }
 ]
 
@@ -236,16 +245,23 @@ def _preparar_preguntas(
     sin_fuente: list[int] = []
 
     for pregunta in preguntas:
-        texto_fuente = _obtener_texto_articulo(
-            pregunta.get("norma_id_normalizada"),
-            pregunta.get("articulo_normalizado"),
-        )
-
         orden = int(pregunta["orden"])
+        tipo_clasificacion = _limpiar_texto(
+            pregunta.get("tipo_clasificacion")
+        ).upper()
 
-        if not texto_fuente:
-            sin_fuente.append(orden)
-            continue
+        es_informatica = tipo_clasificacion == "INFORMATICA"
+        texto_fuente: str | None = None
+
+        if not es_informatica:
+            texto_fuente = _obtener_texto_articulo(
+                pregunta.get("norma_id_normalizada"),
+                pregunta.get("articulo_normalizado"),
+            )
+
+            if not texto_fuente:
+                sin_fuente.append(orden)
+                continue
 
         preparadas.append(
             {
@@ -253,6 +269,9 @@ def _preparar_preguntas(
                     pregunta["simulacro_pregunta_id"]
                 ),
                 "orden": orden,
+                "tipo_clasificacion": (
+                    "INFORMATICA" if es_informatica else "JURIDICA"
+                ),
                 "enunciado": _limpiar_texto(
                     pregunta.get("enunciado")
                 ),
@@ -265,13 +284,17 @@ def _preparar_preguntas(
                 "respuesta_correcta": _limpiar_texto(
                     pregunta.get("respuesta_correcta")
                 ).upper(),
-                "norma": _limpiar_texto(
-                    pregunta.get("nombre_norma")
+                "norma": (
+                    "" if es_informatica else _limpiar_texto(
+                        pregunta.get("nombre_norma")
+                    )
                 ),
-                "articulo": _limpiar_texto(
-                    pregunta.get("articulo")
+                "articulo": (
+                    "" if es_informatica else _limpiar_texto(
+                        pregunta.get("articulo")
+                    )
                 ),
-                "texto_fuente": texto_fuente,
+                "texto_fuente": texto_fuente or "",
             }
         )
 
@@ -285,6 +308,9 @@ def _crear_prompt(lote: list[dict[str, Any]]) -> str:
         datos_ia.append(
             {
                 "orden": pregunta["orden"],
+                "tipo_clasificacion": pregunta[
+                    "tipo_clasificacion"
+                ],
                 "enunciado": pregunta["enunciado"],
                 "opciones": pregunta["opciones"],
                 "respuesta_correcta": pregunta[
@@ -463,7 +489,7 @@ def generar_comentarios_soluciones(
     progreso: Callable[[int, int, int], None] | None = None,
 ) -> dict[str, Any]:
     """
-    Genera y guarda comentarios breves para un simulacro.
+    Genera y guarda comentarios jurídicos e informáticos para un simulacro.
 
     max_lotes:
         Permite limitar una prueba. Por ejemplo, max_lotes=1 procesa

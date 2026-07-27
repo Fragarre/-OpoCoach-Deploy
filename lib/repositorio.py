@@ -16,6 +16,7 @@ Descripción:
 ==============================================================================
 """
 
+import hashlib
 import json
 import random
 import sqlite3
@@ -208,6 +209,7 @@ def obtener_disponibilidad_simulacro(
 
 def crear_simulacro(
     convocatoria_id: int,
+    origenes_seleccionados: list[str],
 ) -> int:
     """
     Genera un simulacro completo.
@@ -215,6 +217,29 @@ def crear_simulacro(
     Lee las preguntas desde oposiciones.sqlite3 y guarda el simulacro
     inmutable en usuario.sqlite3.
     """
+
+    origenes_validos = {"A1", "A2", "C1", "C2"}
+    origenes = sorted(
+        {
+            str(origen).strip().upper()
+            for origen in origenes_seleccionados
+            if str(origen).strip()
+        }
+    )
+
+    if not origenes:
+        raise ValueError(
+            "Debe seleccionar al menos un origen de preguntas."
+        )
+
+    origenes_no_validos = set(origenes) - origenes_validos
+
+    if origenes_no_validos:
+        raise ValueError(
+            "Existe algún origen de preguntas no válido."
+        )
+
+    marcadores_origen = ", ".join("?" for _ in origenes)
 
     # -------------------------------------------------------------------------
     # 1. Lectura de los datos maestros
@@ -276,7 +301,7 @@ def crear_simulacro(
             )
 
         candidatas = con_catalogo.execute(
-            """
+            f"""
             WITH preguntas_clasificadas AS (
                 SELECT DISTINCT
                     bp.id AS banco_pregunta_id,
@@ -348,13 +373,22 @@ def crear_simulacro(
 
                 WHERE bp.convocatoria_id = ?
                   AND bp.estado = 'INCLUIDA'
+                  AND (
+                        lp.origen_oposicion IS NULL
+                        OR TRIM(lp.origen_oposicion) = ''
+                        OR UPPER(TRIM(lp.origen_oposicion))
+                            IN ({marcadores_origen})
+                  )
             )
 
             SELECT *
             FROM preguntas_clasificadas
             WHERE nombre_parte IS NOT NULL
             """,
-            (convocatoria_id,),
+            (
+                convocatoria_id,
+                *origenes,
+            ),
         ).fetchall()
 
     # -------------------------------------------------------------------------
@@ -1634,3 +1668,295 @@ def eliminar_test(
         )
 
     return cursor.rowcount == 1
+
+
+def obtener_resultado_acumulado_convocatoria(
+    convocatoria_id: int,
+) -> dict:
+    """
+    Calcula el rendimiento acumulado de los simulacros corregidos que
+    siguen existiendo para una convocatoria.
+
+    Solo incluye pruebas de tipo SIMULACRO. Un simulacro se considera
+    corregido cuando alguna de sus preguntas tiene respuesta o nivel de
+    seguridad guardado. El resultado se recalcula siempre desde
+    usuario.sqlite3, por lo que una eliminación queda reflejada de forma
+    automática.
+    """
+
+    respuestas_validas = {"A", "B", "C", "D"}
+    etiquetas_seguridad = {
+        "MUY_SEGURO": "Muy seguro",
+        "BASTANTE_SEGURO": "Bastante seguro",
+        "POCO_SEGURO": "Poco seguro",
+    }
+
+    with conectar_usuario() as con:
+        simulacros = con.execute(
+            """
+            SELECT
+                s.id,
+                s.numero,
+                s.fecha_generacion,
+                s.valoracion_test_acierto,
+                s.valoracion_test_fallo,
+                s.valoracion_test_no_contesta
+            FROM simulacros s
+            WHERE s.convocatoria_id = ?
+              AND s.tipo_prueba = 'SIMULACRO'
+              AND EXISTS (
+                    SELECT 1
+                    FROM simulacro_preguntas sp
+                    WHERE sp.simulacro_id = s.id
+                      AND (
+                          sp.respuesta_usuario IS NOT NULL
+                          OR sp.seguridad_usuario IS NOT NULL
+                      )
+              )
+            ORDER BY s.id
+            """,
+            (convocatoria_id,),
+        ).fetchall()
+
+        if not simulacros:
+            return {
+                "convocatoria_id": convocatoria_id,
+                "simulacros": 0,
+                "simulacros_ids": [],
+                "preguntas": 0,
+                "contestadas": 0,
+                "no_contestadas": 0,
+                "aciertos": 0,
+                "fallos": 0,
+                "temas": [],
+                "seguridad": [],
+                "firma_datos": hashlib.sha256(b"").hexdigest(),
+            }
+
+        simulacros_ids = [int(fila["id"]) for fila in simulacros]
+        marcadores = ", ".join("?" for _ in simulacros_ids)
+
+        preguntas = con.execute(
+            f"""
+            SELECT
+                s.id AS simulacro_id,
+                s.numero AS simulacro_numero,
+                sp.orden,
+                sp.respuesta_usuario,
+                sp.seguridad_usuario,
+                ss.respuesta_correcta,
+                ss.temas_json
+            FROM simulacros s
+            JOIN simulacro_preguntas sp
+                ON sp.simulacro_id = s.id
+            JOIN simulacro_snapshot ss
+                ON ss.simulacro_pregunta_id = sp.id
+            WHERE s.id IN ({marcadores})
+            ORDER BY s.id, sp.orden
+            """,
+            simulacros_ids,
+        ).fetchall()
+
+    total = len(preguntas)
+    aciertos = 0
+    fallos = 0
+    no_contestadas = 0
+    estadisticas_temas: dict[str, dict] = {}
+
+    estadisticas_seguridad = {
+        codigo: {
+            "codigo": codigo,
+            "seguridad": etiqueta,
+            "contestadas": 0,
+            "aciertos": 0,
+            "fallos": 0,
+        }
+        for codigo, etiqueta in etiquetas_seguridad.items()
+    }
+
+    firma_partes: list[str] = []
+
+    for simulacro in simulacros:
+        firma_partes.append(
+            "|".join(
+                [
+                    str(simulacro["id"]),
+                    str(simulacro["numero"]),
+                    str(simulacro["fecha_generacion"]),
+                    str(simulacro["valoracion_test_acierto"]),
+                    str(simulacro["valoracion_test_fallo"]),
+                    str(simulacro["valoracion_test_no_contesta"]),
+                ]
+            )
+        )
+
+    for pregunta in preguntas:
+        respuesta_correcta = pregunta["respuesta_correcta"]
+        respuesta_usuario = pregunta["respuesta_usuario"]
+        seguridad_usuario = pregunta["seguridad_usuario"]
+
+        if respuesta_correcta not in respuestas_validas:
+            raise ValueError(
+                "Los simulacros acumulados contienen alguna pregunta "
+                "sin una respuesta correcta válida."
+            )
+
+        if not pregunta["temas_json"]:
+            raise ValueError(
+                "Los simulacros acumulados contienen alguna pregunta "
+                "sin tema congelado."
+            )
+
+        try:
+            tema = json.loads(pregunta["temas_json"])
+        except (TypeError, json.JSONDecodeError) as exc:
+            raise ValueError(
+                "Los simulacros acumulados contienen un tema congelado "
+                "no válido."
+            ) from exc
+
+        parte = tema.get("parte")
+        numero_tema = tema.get("numero_tema")
+        titulo = tema.get("titulo")
+
+        if parte is None or numero_tema is None or not titulo:
+            raise ValueError(
+                "Los simulacros acumulados contienen un tema congelado "
+                "incompleto."
+            )
+
+        clave_tema = f"{parte}|{numero_tema}|{titulo}"
+
+        if clave_tema not in estadisticas_temas:
+            estadisticas_temas[clave_tema] = {
+                "tema_id": tema.get("tema_id_original"),
+                "parte": parte,
+                "numero_tema": numero_tema,
+                "titulo": titulo,
+                "preguntas": 0,
+                "contestadas": 0,
+                "no_contestadas": 0,
+                "aciertos": 0,
+                "fallos": 0,
+                "fallos_muy_seguro": 0,
+            }
+
+        estadistica_tema = estadisticas_temas[clave_tema]
+        estadistica_tema["preguntas"] += 1
+
+        firma_partes.append(
+            "|".join(
+                [
+                    str(pregunta["simulacro_id"]),
+                    str(pregunta["orden"]),
+                    str(respuesta_usuario),
+                    str(seguridad_usuario),
+                    str(respuesta_correcta),
+                    clave_tema,
+                ]
+            )
+        )
+
+        if respuesta_usuario is None:
+            no_contestadas += 1
+            estadistica_tema["no_contestadas"] += 1
+            continue
+
+        if respuesta_usuario not in respuestas_validas:
+            raise ValueError(
+                "Existe alguna respuesta acumulada del usuario no válida."
+            )
+
+        if seguridad_usuario not in estadisticas_seguridad:
+            raise ValueError(
+                "Existe alguna pregunta acumulada contestada sin un "
+                "nivel de seguridad válido."
+            )
+
+        estadistica_tema["contestadas"] += 1
+        estadistica_seguridad = estadisticas_seguridad[seguridad_usuario]
+        estadistica_seguridad["contestadas"] += 1
+
+        if respuesta_usuario == respuesta_correcta:
+            aciertos += 1
+            estadistica_tema["aciertos"] += 1
+            estadistica_seguridad["aciertos"] += 1
+        else:
+            fallos += 1
+            estadistica_tema["fallos"] += 1
+            estadistica_seguridad["fallos"] += 1
+
+            if seguridad_usuario == "MUY_SEGURO":
+                estadistica_tema["fallos_muy_seguro"] += 1
+
+    contestadas = aciertos + fallos
+    resultado_temas = []
+
+    for estadistica in estadisticas_temas.values():
+        preguntas_tema = estadistica["preguntas"]
+        contestadas_tema = estadistica["contestadas"]
+
+        estadistica["porcentaje_aciertos"] = (
+            estadistica["aciertos"] / preguntas_tema * 100
+            if preguntas_tema
+            else 0.0
+        )
+        estadistica["porcentaje_fallos"] = (
+            estadistica["fallos"] / preguntas_tema * 100
+            if preguntas_tema
+            else 0.0
+        )
+        estadistica["porcentaje_no_contestadas"] = (
+            estadistica["no_contestadas"] / preguntas_tema * 100
+            if preguntas_tema
+            else 0.0
+        )
+        estadistica["porcentaje_aciertos_contestadas"] = (
+            estadistica["aciertos"] / contestadas_tema * 100
+            if contestadas_tema
+            else 0.0
+        )
+
+        resultado_temas.append(estadistica)
+
+    resultado_temas.sort(
+        key=lambda item: (
+            item["parte"],
+            item["numero_tema"],
+            item["titulo"],
+        )
+    )
+
+    resultado_seguridad = []
+
+    for estadistica in estadisticas_seguridad.values():
+        contestadas_seguridad = estadistica["contestadas"]
+        estadistica["porcentaje_aciertos"] = (
+            estadistica["aciertos"] / contestadas_seguridad * 100
+            if contestadas_seguridad
+            else 0.0
+        )
+        estadistica["porcentaje_fallos"] = (
+            estadistica["fallos"] / contestadas_seguridad * 100
+            if contestadas_seguridad
+            else 0.0
+        )
+        resultado_seguridad.append(estadistica)
+
+    firma_datos = hashlib.sha256(
+        "\n".join(firma_partes).encode("utf-8")
+    ).hexdigest()
+
+    return {
+        "convocatoria_id": convocatoria_id,
+        "simulacros": len(simulacros),
+        "simulacros_ids": simulacros_ids,
+        "preguntas": total,
+        "contestadas": contestadas,
+        "no_contestadas": no_contestadas,
+        "aciertos": aciertos,
+        "fallos": fallos,
+        "temas": resultado_temas,
+        "seguridad": resultado_seguridad,
+        "firma_datos": firma_datos,
+    }

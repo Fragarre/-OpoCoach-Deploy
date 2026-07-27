@@ -1,8 +1,12 @@
 import streamlit as st
 
+from lib.analisis_rendimiento import (
+    generar_analisis_rendimiento,
+)
 from lib.repositorio import (
     guardar_respuesta_simulacro,
     obtener_preguntas_simulacro,
+    obtener_resultado_acumulado_convocatoria,
     obtener_resultado_simulacro,
 )
 
@@ -72,6 +76,93 @@ def marcar_correccion_modificada(
         None,
     )
 
+    # La firma acumulada invalidará también cualquier análisis previo
+    # cuando vuelvan a mostrarse los resultados guardados.
+
+
+
+
+def mostrar_analisis_rendimiento(
+    resultado_actual: dict,
+) -> None:
+    """Muestra y, bajo petición, genera el análisis IA acumulado."""
+
+    resultado_acumulado = obtener_resultado_acumulado_convocatoria(
+        resultado_actual["convocatoria_id"]
+    )
+
+    st.divider()
+    st.subheader("Análisis acumulado de la convocatoria")
+
+    if resultado_acumulado["simulacros"] <= 0:
+        st.info(
+            "Todavía no hay simulacros corregidos suficientes para "
+            "generar el análisis acumulado."
+        )
+        return
+
+    st.caption(
+        "El análisis utiliza todos los simulacros corregidos que se "
+        "conservan actualmente en esta convocatoria, no solo esta "
+        "corrección. Si se elimina o modifica un simulacro, los datos "
+        "se recalculan."
+    )
+
+    st.write(
+        f'**Datos considerados:** {resultado_acumulado["simulacros"]} '
+        f'simulacros · {resultado_acumulado["preguntas"]} preguntas.'
+    )
+
+    cache_key = (
+        f'analisis_rendimiento_{resultado_actual["convocatoria_id"]}'
+    )
+    cache = st.session_state.get(cache_key)
+
+    if (
+        cache is not None
+        and cache.get("firma_datos")
+        != resultado_acumulado["firma_datos"]
+    ):
+        st.session_state.pop(cache_key, None)
+        cache = None
+
+    if cache is not None:
+        st.markdown(cache["texto"])
+
+    etiqueta_boton = (
+        "Regenerar análisis de rendimiento"
+        if cache is not None
+        else "Generar análisis de rendimiento"
+    )
+
+    if st.button(
+        etiqueta_boton,
+        key=(
+            "generar_analisis_rendimiento_"
+            f'{resultado_actual["simulacro_id"]}'
+        ),
+        use_container_width=False,
+    ):
+        try:
+            with st.spinner(
+                "Analizando los resultados acumulados..."
+            ):
+                texto = generar_analisis_rendimiento(
+                    resultado_actual=resultado_actual,
+                    resultado_acumulado=resultado_acumulado,
+                )
+        except Exception as exc:
+            st.error(
+                "No se ha podido generar el análisis de rendimiento. "
+                f"Detalle: {exc}"
+            )
+            return
+
+        st.session_state[cache_key] = {
+            "firma_datos": resultado_acumulado["firma_datos"],
+            "texto": texto,
+        }
+        st.rerun()
 
 def mostrar_resultado(
     resultado: dict,
@@ -198,6 +289,10 @@ def mostrar_resultado(
     st.caption(
         "En esta tabla los porcentajes se calculan sobre las "
         "preguntas contestadas con cada nivel de seguridad."
+    )
+
+    mostrar_analisis_rendimiento(
+        resultado_actual=resultado,
     )
 
 def mostrar_correccion(
@@ -497,4 +592,3 @@ def mostrar_correccion(
             )
             st.session_state[modo_key] = "resultado"
             st.rerun()
-
