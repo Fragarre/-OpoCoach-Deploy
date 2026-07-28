@@ -3,3 +3,4 @@ pandas
 reportlab
 python-dotenv
 openai
+libsql-client

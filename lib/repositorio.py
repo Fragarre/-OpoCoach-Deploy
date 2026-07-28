@@ -147,14 +147,37 @@ def obtener_simulacros(
 
 def obtener_disponibilidad_simulacro(
     convocatoria_id: int,
+    origenes_seleccionados: list[str],
 ) -> list[sqlite3.Row]:
     """
-    Cuenta las preguntas disponibles por cada parte del simulacro.
+    Cuenta las preguntas disponibles por cada parte del simulacro
+    para los orígenes seleccionados.
+
+    Las preguntas sin origen asignado se incluyen siempre.
     """
+
+    origenes_validos = {"A1", "A2", "C1", "C2"}
+    origenes = sorted(
+        {
+            str(origen).strip().upper()
+            for origen in origenes_seleccionados
+            if str(origen).strip()
+        }
+    )
+
+    if not origenes:
+        return []
+
+    if set(origenes) - origenes_validos:
+        raise ValueError(
+            "Existe algún origen de preguntas no válido."
+        )
+
+    marcadores_origen = ", ".join("?" for _ in origenes)
 
     with conectar() as con:
         return con.execute(
-            """
+            f"""
             WITH preguntas_clasificadas AS (
                 SELECT DISTINCT
                     bp.id AS banco_pregunta_id,
@@ -190,6 +213,12 @@ def obtener_disponibilidad_simulacro(
 
                 WHERE bp.convocatoria_id = ?
                   AND bp.estado = 'INCLUIDA'
+                  AND (
+                        lp.origen_oposicion IS NULL
+                        OR TRIM(lp.origen_oposicion) = ''
+                        OR UPPER(TRIM(lp.origen_oposicion))
+                            IN ({marcadores_origen})
+                  )
             )
 
             SELECT
@@ -204,8 +233,226 @@ def obtener_disponibilidad_simulacro(
 
             ORDER BY nombre_parte
             """,
-            (convocatoria_id,),
+            (
+                convocatoria_id,
+                *origenes,
+            ),
         ).fetchall()
+
+TAMANO_LOTE_ESCRITURA = 25
+
+
+def _dividir_en_lotes(elementos: list[dict], tamano: int):
+    """Divide una lista en lotes consecutivos."""
+
+    for inicio in range(0, len(elementos), tamano):
+        yield elementos[inicio:inicio + tamano]
+
+
+def _guardar_preguntas_prueba_en_lotes(
+    con_usuario,
+    prueba_id: int,
+    preguntas: list[dict],
+    tamano_lote: int = TAMANO_LOTE_ESCRITURA,
+) -> None:
+    """
+    Guarda preguntas y snapshots mediante INSERT múltiples.
+
+    Cada lote requiere únicamente dos peticiones a Turso:
+        1. simulacro_preguntas
+        2. simulacro_snapshot
+    """
+
+    if tamano_lote <= 0:
+        raise ValueError("tamano_lote debe ser mayor que cero.")
+
+    for lote in _dividir_en_lotes(preguntas, tamano_lote):
+        marcadores_preguntas = ", ".join(
+            "(?, ?, ?, ?, ?, ?, ?)" for _ in lote
+        )
+        parametros_preguntas: list = []
+
+        for item in lote:
+            parametros_preguntas.extend(
+                (
+                    prueba_id,
+                    item["orden"],
+                    item["pregunta_id"],
+                    item["banco_pregunta_id"],
+                    item["parte_id"],
+                    item["parte_nombre"],
+                    item["parte_orden"],
+                )
+            )
+
+        cursor = con_usuario.execute(
+            f"""
+            INSERT INTO simulacro_preguntas
+            (
+                simulacro_id,
+                orden,
+                pregunta_id,
+                banco_pregunta_id,
+                parte_id,
+                parte_nombre,
+                parte_orden
+            )
+            VALUES {marcadores_preguntas}
+            """,
+            parametros_preguntas,
+        )
+
+        if cursor.rowcount not in (-1, len(lote)):
+            raise RuntimeError(
+                "No se han podido guardar todas las preguntas "
+                "de la prueba."
+            )
+
+        marcadores_snapshot = ", ".join(
+            "(" + ", ".join("?" for _ in range(27)) + ")"
+            for _ in lote
+        )
+        parametros_snapshot: list = []
+
+        for item in lote:
+            parametros_snapshot.extend(
+                (
+                    item["orden"],
+                    item["enunciado"],
+                    item["opcion_a"],
+                    item["opcion_b"],
+                    item["opcion_c"],
+                    item["opcion_d"],
+                    item["respuesta_correcta"],
+                    item["tipo_clasificacion"],
+                    item["tipo_norma"],
+                    item["nombre_norma"],
+                    item["articulo"],
+                    item["tema_no_juridico"],
+                    item["origen_oposicion"],
+                    item["tipo_fuente"],
+                    item["importacion_fichero_id"],
+                    item["pagina_origen"],
+                    item["norma_id_normalizada"],
+                    item["articulo_normalizado"],
+                    item["teorica_practica"],
+                    item["tipo_norma_normalizado"],
+                    item["nombre_norma_normalizado"],
+                    item["banco_tipo_vinculacion"],
+                    item["banco_estado"],
+                    item["banco_metodo_vinculacion"],
+                    item["banco_motivo_revision"],
+                    item["temas_json"],
+                    None,
+                )
+            )
+
+        cursor = con_usuario.execute(
+            f"""
+            WITH datos_snapshot
+            (
+                orden,
+                enunciado,
+                opcion_a,
+                opcion_b,
+                opcion_c,
+                opcion_d,
+                respuesta_correcta,
+                tipo_clasificacion,
+                tipo_norma,
+                nombre_norma,
+                articulo,
+                tema_no_juridico,
+                origen_oposicion,
+                tipo_fuente,
+                importacion_fichero_id,
+                pagina_origen,
+                norma_id_normalizada,
+                articulo_normalizado,
+                teorica_practica,
+                tipo_norma_normalizado,
+                nombre_norma_normalizado,
+                banco_tipo_vinculacion,
+                banco_estado,
+                banco_metodo_vinculacion,
+                banco_motivo_revision,
+                temas_json,
+                comentario_solucion
+            ) AS (
+                VALUES {marcadores_snapshot}
+            )
+            INSERT INTO simulacro_snapshot
+            (
+                simulacro_pregunta_id,
+                enunciado,
+                opcion_a,
+                opcion_b,
+                opcion_c,
+                opcion_d,
+                respuesta_correcta,
+                tipo_clasificacion,
+                tipo_norma,
+                nombre_norma,
+                articulo,
+                tema_no_juridico,
+                origen_oposicion,
+                tipo_fuente,
+                importacion_fichero_id,
+                pagina_origen,
+                norma_id_normalizada,
+                articulo_normalizado,
+                teorica_practica,
+                tipo_norma_normalizado,
+                nombre_norma_normalizado,
+                banco_tipo_vinculacion,
+                banco_estado,
+                banco_metodo_vinculacion,
+                banco_motivo_revision,
+                temas_json,
+                comentario_solucion
+            )
+            SELECT
+                sp.id,
+                ds.enunciado,
+                ds.opcion_a,
+                ds.opcion_b,
+                ds.opcion_c,
+                ds.opcion_d,
+                ds.respuesta_correcta,
+                ds.tipo_clasificacion,
+                ds.tipo_norma,
+                ds.nombre_norma,
+                ds.articulo,
+                ds.tema_no_juridico,
+                ds.origen_oposicion,
+                ds.tipo_fuente,
+                ds.importacion_fichero_id,
+                ds.pagina_origen,
+                ds.norma_id_normalizada,
+                ds.articulo_normalizado,
+                ds.teorica_practica,
+                ds.tipo_norma_normalizado,
+                ds.nombre_norma_normalizado,
+                ds.banco_tipo_vinculacion,
+                ds.banco_estado,
+                ds.banco_metodo_vinculacion,
+                ds.banco_motivo_revision,
+                ds.temas_json,
+                ds.comentario_solucion
+            FROM datos_snapshot ds
+            JOIN simulacro_preguntas sp
+                ON sp.simulacro_id = ?
+               AND sp.orden = ds.orden
+            """,
+            (*parametros_snapshot, prueba_id),
+        )
+
+        if cursor.rowcount not in (-1, len(lote)):
+            raise RuntimeError(
+                "No se han podido guardar todos los snapshots "
+                "de la prueba."
+            )
+
 
 def crear_simulacro(
     convocatoria_id: int,
@@ -514,142 +761,65 @@ def crear_simulacro(
                 "No se ha podido crear el simulacro."
             )
 
+        preguntas_para_guardar: list[dict] = []
+
         for orden, datos in enumerate(
             preguntas_seleccionadas,
             start=1,
         ):
             parte, pregunta = datos
 
-            cursor_pregunta = con_usuario.execute(
-                """
-                INSERT INTO simulacro_preguntas
-                (
-                    simulacro_id,
-                    orden,
-                    pregunta_id,
-                    banco_pregunta_id,
-                    parte_id,
-                    parte_nombre,
-                    parte_orden
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    simulacro_id,
-                    orden,
-                    pregunta["pregunta_id"],
-                    pregunta["banco_pregunta_id"],
-                    parte["id"],
-                    parte["nombre"],
-                    parte["orden"],
-                ),
-            )
-
-            simulacro_pregunta_id = (
-                cursor_pregunta.lastrowid
-            )
-
-            if simulacro_pregunta_id is None:
-                raise RuntimeError(
-                    "No se ha podido guardar una pregunta "
-                    "del simulacro."
-                )
-
-            con_usuario.execute(
-                """
-                INSERT INTO simulacro_snapshot
-                (
-                    simulacro_pregunta_id,
-
-                    enunciado,
-                    opcion_a,
-                    opcion_b,
-                    opcion_c,
-                    opcion_d,
-                    respuesta_correcta,
-
-                    tipo_clasificacion,
-                    tipo_norma,
-                    nombre_norma,
-                    articulo,
-                    tema_no_juridico,
-
-                    origen_oposicion,
-                    tipo_fuente,
-                    importacion_fichero_id,
-                    pagina_origen,
-
-                    norma_id_normalizada,
-                    articulo_normalizado,
-                    teorica_practica,
-                    tipo_norma_normalizado,
-                    nombre_norma_normalizado,
-
-                    banco_tipo_vinculacion,
-                    banco_estado,
-                    banco_metodo_vinculacion,
-                    banco_motivo_revision,
-
-                    temas_json,
-                    comentario_solucion
-                )
-                VALUES (
-                    ?, ?, ?, ?, ?, ?, ?,
-                    ?, ?, ?, ?, ?,
-                    ?, ?, ?, ?,
-                    ?, ?, ?, ?, ?,
-                    ?, ?, ?, ?,
-                    ?, ?
-                )
-                """,
-                (
-                    simulacro_pregunta_id,
-
-                    pregunta["enunciado"],
-                    pregunta["opcion_a"],
-                    pregunta["opcion_b"],
-                    pregunta["opcion_c"],
-                    pregunta["opcion_d"],
-                    pregunta["respuesta_correcta"],
-
-                    pregunta["tipo_clasificacion"],
-                    pregunta["tipo_norma"],
-                    pregunta["nombre_norma"],
-                    pregunta["articulo"],
-                    pregunta["tema_no_juridico"],
-
-                    pregunta["origen_oposicion"],
-                    pregunta["tipo_fuente"],
-                    pregunta["importacion_fichero_id"],
-                    pregunta["pagina_origen"],
-
-                    pregunta["norma_id_normalizada"],
-                    pregunta["articulo_normalizado"],
-                    pregunta["teorica_practica"],
-                    pregunta["tipo_norma_normalizado"],
-                    pregunta["nombre_norma_normalizado"],
-
-                    pregunta["tipo_vinculacion"],
-                    pregunta["banco_estado"],
-                    pregunta["metodo_vinculacion"],
-                    pregunta["motivo_revision"],
-
-                    json.dumps(
+            preguntas_para_guardar.append(
+                {
+                    "orden": orden,
+                    "pregunta_id": pregunta["pregunta_id"],
+                    "banco_pregunta_id": pregunta["banco_pregunta_id"],
+                    "parte_id": parte["id"],
+                    "parte_nombre": parte["nombre"],
+                    "parte_orden": parte["orden"],
+                    "enunciado": pregunta["enunciado"],
+                    "opcion_a": pregunta["opcion_a"],
+                    "opcion_b": pregunta["opcion_b"],
+                    "opcion_c": pregunta["opcion_c"],
+                    "opcion_d": pregunta["opcion_d"],
+                    "respuesta_correcta": pregunta["respuesta_correcta"],
+                    "tipo_clasificacion": pregunta["tipo_clasificacion"],
+                    "tipo_norma": pregunta["tipo_norma"],
+                    "nombre_norma": pregunta["nombre_norma"],
+                    "articulo": pregunta["articulo"],
+                    "tema_no_juridico": pregunta["tema_no_juridico"],
+                    "origen_oposicion": pregunta["origen_oposicion"],
+                    "tipo_fuente": pregunta["tipo_fuente"],
+                    "importacion_fichero_id": pregunta["importacion_fichero_id"],
+                    "pagina_origen": pregunta["pagina_origen"],
+                    "norma_id_normalizada": pregunta["norma_id_normalizada"],
+                    "articulo_normalizado": pregunta["articulo_normalizado"],
+                    "teorica_practica": pregunta["teorica_practica"],
+                    "tipo_norma_normalizado": pregunta["tipo_norma_normalizado"],
+                    "nombre_norma_normalizado": pregunta["nombre_norma_normalizado"],
+                    "banco_tipo_vinculacion": pregunta["tipo_vinculacion"],
+                    "banco_estado": pregunta["banco_estado"],
+                    "banco_metodo_vinculacion": pregunta["metodo_vinculacion"],
+                    "banco_motivo_revision": pregunta["motivo_revision"],
+                    "temas_json": json.dumps(
                         {
                             "tema_id_original": pregunta["tema_id"],
                             "parte": pregunta["tema_parte"],
                             "numero_tema": pregunta["numero_tema"],
                             "titulo": pregunta["tema_titulo"],
-                            "tipo_contenido": pregunta[
-                                "tema_tipo_contenido"
-                            ],
+                            "tipo_contenido": pregunta["tema_tipo_contenido"],
                             "es_principal": 1,
                         },
                         ensure_ascii=False,
                     ),
-                    None,
-                ),
+                }
             )
+
+        _guardar_preguntas_prueba_en_lotes(
+            con_usuario,
+            int(simulacro_id),
+            preguntas_para_guardar,
+        )
 
         return int(simulacro_id)
 
@@ -1506,136 +1676,64 @@ def crear_test(
         if test_id is None:
             raise RuntimeError("No se ha podido crear el test.")
 
+        preguntas_para_guardar: list[dict] = []
+
         for orden, pregunta in enumerate(
             preguntas_seleccionadas,
             start=1,
         ):
-            cursor_pregunta = con_usuario.execute(
-                """
-                INSERT INTO simulacro_preguntas
-                (
-                    simulacro_id,
-                    orden,
-                    pregunta_id,
-                    banco_pregunta_id,
-                    parte_id,
-                    parte_nombre,
-                    parte_orden
-                )
-                VALUES (?, ?, ?, ?, NULL, ?, ?)
-                """,
-                (
-                    test_id,
-                    orden,
-                    pregunta["pregunta_id"],
-                    pregunta["banco_pregunta_id"],
-                    pregunta["tema_parte"],
-                    pregunta["numero_tema"],
-                ),
-            )
-
-            simulacro_pregunta_id = cursor_pregunta.lastrowid
-
-            if simulacro_pregunta_id is None:
-                raise RuntimeError(
-                    "No se ha podido guardar una pregunta del test."
-                )
-
-            con_usuario.execute(
-                """
-                INSERT INTO simulacro_snapshot
-                (
-                    simulacro_pregunta_id,
-
-                    enunciado,
-                    opcion_a,
-                    opcion_b,
-                    opcion_c,
-                    opcion_d,
-                    respuesta_correcta,
-
-                    tipo_clasificacion,
-                    tipo_norma,
-                    nombre_norma,
-                    articulo,
-                    tema_no_juridico,
-
-                    origen_oposicion,
-                    tipo_fuente,
-                    importacion_fichero_id,
-                    pagina_origen,
-
-                    norma_id_normalizada,
-                    articulo_normalizado,
-                    teorica_practica,
-                    tipo_norma_normalizado,
-                    nombre_norma_normalizado,
-
-                    banco_tipo_vinculacion,
-                    banco_estado,
-                    banco_metodo_vinculacion,
-                    banco_motivo_revision,
-
-                    temas_json,
-                    comentario_solucion
-                )
-                VALUES (
-                    ?, ?, ?, ?, ?, ?, ?,
-                    ?, ?, ?, ?, ?,
-                    ?, ?, ?, ?,
-                    ?, ?, ?, ?, ?,
-                    ?, ?, ?, ?,
-                    ?, ?
-                )
-                """,
-                (
-                    simulacro_pregunta_id,
-
-                    pregunta["enunciado"],
-                    pregunta["opcion_a"],
-                    pregunta["opcion_b"],
-                    pregunta["opcion_c"],
-                    pregunta["opcion_d"],
-                    pregunta["respuesta_correcta"],
-
-                    pregunta["tipo_clasificacion"],
-                    pregunta["tipo_norma"],
-                    pregunta["nombre_norma"],
-                    pregunta["articulo"],
-                    pregunta["tema_no_juridico"],
-
-                    pregunta["origen_oposicion"],
-                    pregunta["tipo_fuente"],
-                    pregunta["importacion_fichero_id"],
-                    pregunta["pagina_origen"],
-
-                    pregunta["norma_id_normalizada"],
-                    pregunta["articulo_normalizado"],
-                    pregunta["teorica_practica"],
-                    pregunta["tipo_norma_normalizado"],
-                    pregunta["nombre_norma_normalizado"],
-
-                    pregunta["tipo_vinculacion"],
-                    pregunta["banco_estado"],
-                    pregunta["metodo_vinculacion"],
-                    pregunta["motivo_revision"],
-
-                    json.dumps(
+            preguntas_para_guardar.append(
+                {
+                    "orden": orden,
+                    "pregunta_id": pregunta["pregunta_id"],
+                    "banco_pregunta_id": pregunta["banco_pregunta_id"],
+                    "parte_id": None,
+                    "parte_nombre": pregunta["tema_parte"],
+                    "parte_orden": pregunta["numero_tema"],
+                    "enunciado": pregunta["enunciado"],
+                    "opcion_a": pregunta["opcion_a"],
+                    "opcion_b": pregunta["opcion_b"],
+                    "opcion_c": pregunta["opcion_c"],
+                    "opcion_d": pregunta["opcion_d"],
+                    "respuesta_correcta": pregunta["respuesta_correcta"],
+                    "tipo_clasificacion": pregunta["tipo_clasificacion"],
+                    "tipo_norma": pregunta["tipo_norma"],
+                    "nombre_norma": pregunta["nombre_norma"],
+                    "articulo": pregunta["articulo"],
+                    "tema_no_juridico": pregunta["tema_no_juridico"],
+                    "origen_oposicion": pregunta["origen_oposicion"],
+                    "tipo_fuente": pregunta["tipo_fuente"],
+                    "importacion_fichero_id": pregunta["importacion_fichero_id"],
+                    "pagina_origen": pregunta["pagina_origen"],
+                    "norma_id_normalizada": pregunta["norma_id_normalizada"],
+                    "articulo_normalizado": pregunta["articulo_normalizado"],
+                    "teorica_practica": pregunta["teorica_practica"],
+                    "tipo_norma_normalizado": pregunta["tipo_norma_normalizado"],
+                    "nombre_norma_normalizado": pregunta["nombre_norma_normalizado"],
+                    "banco_tipo_vinculacion": pregunta["tipo_vinculacion"],
+                    "banco_estado": pregunta["banco_estado"],
+                    "banco_metodo_vinculacion": pregunta["metodo_vinculacion"],
+                    "banco_motivo_revision": pregunta["motivo_revision"],
+                    "temas_json": json.dumps(
                         {
                             "tema_id_original": pregunta["tema_id"],
                             "parte": pregunta["tema_parte"],
                             "numero_tema": pregunta["numero_tema"],
                             "titulo": pregunta["tema_titulo"],
-                            "tipo_contenido": pregunta[
-                                "tema_tipo_contenido"
-                            ],
+                            "tipo_contenido": pregunta["tema_tipo_contenido"],
                             "es_principal": 1,
                         },
                         ensure_ascii=False,
                     ),
-                    None,
-                ),
+                }
             )
+
+        _guardar_preguntas_prueba_en_lotes(
+            con_usuario,
+            int(test_id),
+            preguntas_para_guardar,
+        )
+
 
     return {
         "test_id": int(test_id),

@@ -29,6 +29,8 @@ from __future__ import annotations
 
 import json
 import re
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Iterable
@@ -38,6 +40,7 @@ from tools.openai_api import seleccionar_fragmento_json
 
 
 TAMANO_LOTE = 16
+MAX_TRABAJADORES_IA = 3
 MODELO_PREDETERMINADO = "gpt-5.4-mini"
 OPERACION_IA = "comentarios_pdf_soluciones"
 
@@ -446,6 +449,12 @@ def _guardar_comentarios(
     lote: list[dict[str, Any]],
     comentarios: dict[int, str],
 ) -> int:
+    """
+    Guarda todos los comentarios del lote mediante un único UPDATE remoto.
+
+    Con Turso evita una petición HTTP por pregunta y reduce cada lote a una
+    sola escritura.
+    """
     ids_por_orden = {
         int(pregunta["orden"]): int(
             pregunta["simulacro_pregunta_id"]
@@ -453,33 +462,123 @@ def _guardar_comentarios(
         for pregunta in lote
     }
 
-    actualizados = 0
+    pares: list[tuple[int, str]] = [
+        (ids_por_orden[int(orden)], comentario)
+        for orden, comentario in comentarios.items()
+    ]
+
+    if not pares:
+        return 0
+
+    clausulas_case = " ".join(
+        "WHEN ? THEN ?"
+        for _ in pares
+    )
+    marcadores_ids = ", ".join(
+        "?"
+        for _ in pares
+    )
+
+    parametros: list[Any] = []
+
+    for simulacro_pregunta_id, comentario in pares:
+        parametros.extend(
+            (simulacro_pregunta_id, comentario)
+        )
+
+    parametros.extend(
+        simulacro_pregunta_id
+        for simulacro_pregunta_id, _ in pares
+    )
+
+    sql = f"""
+        UPDATE simulacro_snapshot
+
+        SET comentario_solucion = CASE simulacro_pregunta_id
+            {clausulas_case}
+            ELSE comentario_solucion
+        END
+
+        WHERE simulacro_pregunta_id IN ({marcadores_ids})
+          AND (
+                comentario_solucion IS NULL
+                OR TRIM(comentario_solucion) = ''
+              )
+    """
 
     with conectar_usuario() as con:
-        # con.execute("BEGIN IMMEDIATE")
+        cursor = con.execute(
+            sql,
+            tuple(parametros),
+        )
 
-        for orden, comentario in comentarios.items():
-            cursor = con.execute(
-                """
-                UPDATE simulacro_snapshot
+    return cursor.rowcount
 
-                SET comentario_solucion = ?
 
-                WHERE simulacro_pregunta_id = ?
-                  AND (
-                        comentario_solucion IS NULL
-                        OR TRIM(comentario_solucion) = ''
-                      )
-                """,
-                (
-                    comentario,
-                    ids_por_orden[orden],
-                ),
+def _procesar_lote_ia(
+    numero_lote: int,
+    lote: list[dict[str, Any]],
+    modelo: str,
+) -> dict[str, Any]:
+    """
+    Ejecuta la llamada a IA y valida la respuesta.
+
+    Cada lote dispone de dos intentos. No escribe en Turso ni en los logs.
+    """
+    prompt = _crear_prompt(lote)
+    respuesta: Any | None = None
+    errores_intentos: list[str] = []
+    tiempo_ia = 0.0
+    llamadas_ia = 0
+
+    for intento in (1, 2):
+        try:
+            inicio_ia = time.perf_counter()
+
+            try:
+                respuesta = seleccionar_fragmento_json(
+                    prompt=prompt,
+                    modelo=modelo,
+                    operacion=OPERACION_IA,
+                )
+            finally:
+                tiempo_ia += time.perf_counter() - inicio_ia
+                llamadas_ia += 1
+
+            comentarios = _validar_respuesta(
+                respuesta,
+                lote,
             )
 
-            actualizados += cursor.rowcount
+            return {
+                "numero_lote": numero_lote,
+                "lote": lote,
+                "prompt": prompt,
+                "respuesta": respuesta,
+                "comentarios": comentarios,
+                "error": None,
+                "tiempo_ia": tiempo_ia,
+                "llamadas_ia": llamadas_ia,
+                "intentos_fallidos": intento - 1,
+            }
 
-    return actualizados
+        except Exception as exc:
+            errores_intentos.append(
+                f"Intento {intento}: "
+                f"{type(exc).__name__}: {exc}"
+            )
+
+    return {
+        "numero_lote": numero_lote,
+        "lote": lote,
+        "prompt": prompt,
+        "respuesta": respuesta,
+        "comentarios": None,
+        "error": "\n".join(errores_intentos),
+        "tiempo_ia": tiempo_ia,
+        "llamadas_ia": llamadas_ia,
+        "intentos_fallidos": 2,
+    }
 
 
 def generar_comentarios_soluciones(
@@ -487,130 +586,205 @@ def generar_comentarios_soluciones(
     modelo: str = MODELO_PREDETERMINADO,
     tamano_lote: int = TAMANO_LOTE,
     progreso: Callable[[int, int, int], None] | None = None,
+    max_trabajadores_ia: int = MAX_TRABAJADORES_IA,
 ) -> dict[str, Any]:
     """
     Genera y guarda comentarios jurídicos e informáticos para un simulacro.
 
-    max_lotes:
-        Permite limitar una prueba. Por ejemplo, max_lotes=1 procesa
-        únicamente el primer lote pendiente.
-
-    Devuelve un resumen de ejecución.
+    Los lotes de IA se procesan en paralelo. Las escrituras en Turso y los
+    logs se realizan después, de forma secuencial y controlada.
     """
-    if simulacro_id <= 0:
-        raise ValueError(
-            "simulacro_id debe ser mayor que cero."
-        )
+    inicio_total = time.perf_counter()
 
-    if tamano_lote <= 0:
-        raise ValueError(
-            "tamano_lote debe ser mayor que cero."
-        )
-
-    pendientes = _obtener_preguntas_pendientes(
-        simulacro_id
-    )
-
-    preparadas, sin_fuente = _preparar_preguntas(
-        pendientes
-    )
+    tiempo_lectura_turso = 0.0
+    tiempo_preparacion = 0.0
+    tiempo_ia_acumulado = 0.0
+    tiempo_ia_pared = 0.0
+    tiempo_guardado_turso = 0.0
+    tiempo_logs = 0.0
+    llamadas_ia = 0
+    intentos_fallidos = 0
+    total_lotes = 0
 
     resumen: dict[str, Any] = {
         "simulacro_id": simulacro_id,
-        "pendientes_iniciales": len(pendientes),
-        "con_fuente": len(preparadas),
-        "sin_fuente": sin_fuente,
+        "pendientes_iniciales": 0,
+        "con_fuente": 0,
+        "sin_fuente": [],
         "actualizadas": 0,
         "errores": [],
         "lotes_procesados": 0,
     }
 
-    if not preparadas:
-        if progreso is not None:
-            progreso(0, 0, 0)
-        return resumen
+    try:
+        if simulacro_id <= 0:
+            raise ValueError(
+                "simulacro_id debe ser mayor que cero."
+            )
 
-    lotes = list(
-        _dividir_lotes(preparadas, tamano_lote)
-    )
+        if tamano_lote <= 0:
+            raise ValueError(
+                "tamano_lote debe ser mayor que cero."
+            )
 
-    total_lotes = len(lotes)
+        if max_trabajadores_ia <= 0:
+            raise ValueError(
+                "max_trabajadores_ia debe ser mayor que cero."
+            )
 
-    for numero_lote, lote in enumerate(
-        lotes,
-        start=1,
-    ):
-        prompt = _crear_prompt(lote)
-        respuesta: None
-        errores_intentos: list[str] = []
-        lote_completado = False
+        inicio = time.perf_counter()
+        pendientes = _obtener_preguntas_pendientes(
+            simulacro_id
+        )
+        tiempo_lectura_turso += time.perf_counter() - inicio
 
-        for intento in (1, 2):
-            try:
-                respuesta = seleccionar_fragmento_json(
-                    prompt=prompt,
-                    modelo=modelo,
-                    operacion=OPERACION_IA,
-                )
+        inicio = time.perf_counter()
+        preparadas, sin_fuente = _preparar_preguntas(
+            pendientes
+        )
+        tiempo_preparacion += time.perf_counter() - inicio
 
-                comentarios = _validar_respuesta(
-                    respuesta,
+        resumen.update(
+            {
+                "pendientes_iniciales": len(pendientes),
+                "con_fuente": len(preparadas),
+                "sin_fuente": sin_fuente,
+            }
+        )
+
+        if not preparadas:
+            if progreso is not None:
+                progreso(0, 0, 0)
+
+            return resumen
+
+        lotes = list(
+            _dividir_lotes(preparadas, tamano_lote)
+        )
+        total_lotes = len(lotes)
+
+        resultados: dict[int, dict[str, Any]] = {}
+
+        inicio_ia_pared = time.perf_counter()
+
+        with ThreadPoolExecutor(
+            max_workers=min(
+                max_trabajadores_ia,
+                total_lotes,
+            )
+        ) as executor:
+            futuros = {
+                executor.submit(
+                    _procesar_lote_ia,
+                    numero_lote,
                     lote,
+                    modelo,
+                ): numero_lote
+                for numero_lote, lote in enumerate(
+                    lotes,
+                    start=1,
+                )
+            }
+
+            for futuro in as_completed(futuros):
+                resultado = futuro.result()
+                numero_lote = int(
+                    resultado["numero_lote"]
+                )
+                resultados[numero_lote] = resultado
+
+                tiempo_ia_acumulado += float(
+                    resultado["tiempo_ia"]
+                )
+                llamadas_ia += int(
+                    resultado["llamadas_ia"]
+                )
+                intentos_fallidos += int(
+                    resultado["intentos_fallidos"]
                 )
 
+        tiempo_ia_pared = (
+            time.perf_counter() - inicio_ia_pared
+        )
+
+        for numero_lote in range(1, total_lotes + 1):
+            resultado = resultados[numero_lote]
+            lote = resultado["lote"]
+            prompt = resultado["prompt"]
+            respuesta = resultado["respuesta"]
+            error = resultado["error"]
+
+            if error is None:
+                inicio = time.perf_counter()
                 actualizadas = _guardar_comentarios(
                     lote,
-                    comentarios,
+                    resultado["comentarios"],
+                )
+                tiempo_guardado_turso += (
+                    time.perf_counter() - inicio
                 )
 
                 resumen["actualizadas"] += actualizadas
                 resumen["lotes_procesados"] += 1
 
+                inicio = time.perf_counter()
                 _guardar_log(
                     simulacro_id=simulacro_id,
                     numero_lote=numero_lote,
                     prompt=prompt,
                     respuesta=respuesta,
                 )
+                tiempo_logs += time.perf_counter() - inicio
 
-                lote_completado = True
+            else:
+                ordenes = [
+                    int(pregunta["orden"])
+                    for pregunta in lote
+                ]
 
-                if progreso is not None:
-                    progreso(
-                        numero_lote,
-                        total_lotes,
-                        resumen["actualizadas"],
-                    )
-
-                break
-
-            except Exception as exc:
-                errores_intentos.append(
-                    f"Intento {intento}: "
-                    f"{type(exc).__name__}: {exc}"
+                resumen["errores"].append(
+                    {
+                        "lote": numero_lote,
+                        "ordenes": ordenes,
+                        "error": error,
+                    }
                 )
 
-        if not lote_completado:
-            ordenes = [
-                int(pregunta["orden"])
-                for pregunta in lote
-            ]
-            texto_error = "\n".join(errores_intentos)
+                inicio = time.perf_counter()
+                _guardar_log(
+                    simulacro_id=simulacro_id,
+                    numero_lote=numero_lote,
+                    prompt=prompt,
+                    respuesta=respuesta,
+                    error=error,
+                )
+                tiempo_logs += time.perf_counter() - inicio
 
-            resumen["errores"].append(
-                {
-                    "lote": numero_lote,
-                    "ordenes": ordenes,
-                    "error": texto_error,
-                }
-            )
+            if progreso is not None:
+                progreso(
+                    numero_lote,
+                    total_lotes,
+                    resumen["actualizadas"],
+                )
 
-            _guardar_log(
-                simulacro_id=simulacro_id,
-                numero_lote=numero_lote,
-                prompt=prompt,
-                respuesta=respuesta,
-                error=texto_error,
-            )
+        return resumen
 
-    return resumen
+    finally:
+        tiempo_total = time.perf_counter() - inicio_total
+
+        print(
+            "TIEMPOS comentarios soluciones"
+            f" | total={tiempo_total:.2f}s"
+            f" | lectura_turso={tiempo_lectura_turso:.2f}s"
+            f" | preparacion={tiempo_preparacion:.2f}s"
+            f" | ia_pared={tiempo_ia_pared:.2f}s"
+            f" | ia_acumulada={tiempo_ia_acumulado:.2f}s"
+            f" | guardado_turso={tiempo_guardado_turso:.2f}s"
+            f" | logs={tiempo_logs:.2f}s"
+            f" | lotes={total_lotes}"
+            f" | llamadas_ia={llamadas_ia}"
+            f" | intentos_fallidos={intentos_fallidos}"
+            f" | tamano_lote={tamano_lote}"
+            f" | trabajadores_ia={max_trabajadores_ia}",
+            flush=True,
+        )

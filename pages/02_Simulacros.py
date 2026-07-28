@@ -6,6 +6,7 @@ from lib.repositorio import (
     crear_simulacro,
     obtener_convocatoria,
     obtener_simulacros,
+    obtener_disponibilidad_simulacro,
     eliminar_simulacro,
 )
 from lib.sesion import obtener_convocatoria_id
@@ -123,6 +124,23 @@ with columna_origen.popover(
 
 sin_origen_seleccionado = not origenes_seleccionados
 
+disponibilidad = obtener_disponibilidad_simulacro(
+    convocatoria_id=convocatoria_id,
+    origenes_seleccionados=origenes_seleccionados,
+)
+
+total_disponibles = sum(
+    int(fila["disponibles"])
+    for fila in disponibilidad
+)
+
+contenedor_progreso = columna_progreso.empty()
+
+contenedor_progreso.metric(
+    "Preguntas disponibles",
+    f"{total_disponibles:,}".replace(",", "."),
+)
+
 if columna_crear.button(
     "Crear simulacro de prueba",
     type="primary",
@@ -146,8 +164,6 @@ if columna_crear.button(
             f"Simulacro {simulacro_id} creado correctamente."
         )
         st.rerun()
-
-contenedor_progreso = columna_progreso.empty()
 
 simulacros = obtener_simulacros(convocatoria_id)
 
