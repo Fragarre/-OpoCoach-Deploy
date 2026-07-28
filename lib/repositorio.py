@@ -150,9 +150,11 @@ def obtener_disponibilidad_simulacro(
     origenes_seleccionados: list[str],
 ) -> list[sqlite3.Row]:
     """
-    Cuenta las preguntas disponibles por cada parte del simulacro
-    para los orígenes seleccionados.
+    Cuenta las preguntas disponibles por cada parte configurada
+    de la convocatoria para los orígenes seleccionados.
 
+    La pertenencia a una parte se obtiene exclusivamente de
+    banco_preguntas.convocatoria_parte_id.
     Las preguntas sin origen asignado se incluyen siempre.
     """
 
@@ -178,64 +180,40 @@ def obtener_disponibilidad_simulacro(
     with conectar() as con:
         return con.execute(
             f"""
-            WITH preguntas_clasificadas AS (
-                SELECT DISTINCT
-                    bp.id AS banco_pregunta_id,
-
-                    CASE
-                        WHEN tt.parte = 'GENERAL'
-                            THEN 'general'
-
-                        WHEN tt.parte = 'ESPECIAL'
-                             AND lp.tipo_clasificacion = 'INFORMATICA'
-                            THEN 'especial_informatica'
-
-                        WHEN tt.parte = 'ESPECIAL'
-                             AND lp.teorica_practica = 'PRACTICA'
-                            THEN 'especial_practica'
-
-                        WHEN tt.parte = 'ESPECIAL'
-                             AND lp.teorica_practica = 'TEORICA'
-                            THEN 'especial_teoria'
-                    END AS nombre_parte
-
-                FROM banco_preguntas bp
-
-                JOIN lote_preguntas lp
-                    ON lp.id = bp.pregunta_id
-
-                JOIN banco_preguntas_temas bpt
-                    ON bpt.banco_pregunta_id = bp.id
-                   AND bpt.es_principal = 1
-
-                JOIN temario_temas tt
-                    ON tt.id = bpt.tema_id
-
-                WHERE bp.convocatoria_id = ?
-                  AND bp.estado = 'INCLUIDA'
-                  AND (
-                        lp.origen_oposicion IS NULL
-                        OR TRIM(lp.origen_oposicion) = ''
-                        OR UPPER(TRIM(lp.origen_oposicion))
-                            IN ({marcadores_origen})
-                  )
-            )
-
             SELECT
-                nombre_parte AS parte,
-                COUNT(*) AS disponibles
+                cp.id AS parte_id,
+                cp.nombre AS parte,
+                cp.orden AS parte_orden,
+                COUNT(DISTINCT CASE WHEN lp.id IS NOT NULL THEN bp.id END) AS disponibles
 
-            FROM preguntas_clasificadas
+            FROM convocatoria_partes cp
 
-            WHERE nombre_parte IS NOT NULL
+            LEFT JOIN banco_preguntas bp
+                ON bp.convocatoria_parte_id = cp.id
+               AND bp.convocatoria_id = cp.convocatoria_id
+               AND bp.estado = 'INCLUIDA'
 
-            GROUP BY nombre_parte
+            LEFT JOIN lote_preguntas lp
+                ON lp.id = bp.pregunta_id
+               AND (
+                    lp.origen_oposicion IS NULL
+                    OR TRIM(lp.origen_oposicion) = ''
+                    OR UPPER(TRIM(lp.origen_oposicion))
+                        IN ({marcadores_origen})
+               )
 
-            ORDER BY nombre_parte
+            WHERE cp.convocatoria_id = ?
+
+            GROUP BY
+                cp.id,
+                cp.nombre,
+                cp.orden
+
+            ORDER BY cp.orden
             """,
             (
-                convocatoria_id,
                 *origenes,
+                convocatoria_id,
             ),
         ).fetchall()
 
@@ -549,88 +527,70 @@ def crear_simulacro(
 
         candidatas = con_catalogo.execute(
             f"""
-            WITH preguntas_clasificadas AS (
-                SELECT DISTINCT
-                    bp.id AS banco_pregunta_id,
-                    bp.pregunta_id,
+            SELECT DISTINCT
+                bp.id AS banco_pregunta_id,
+                bp.pregunta_id,
+                bp.convocatoria_parte_id,
 
-                    lp.enunciado,
-                    lp.opcion_a,
-                    lp.opcion_b,
-                    lp.opcion_c,
-                    lp.opcion_d,
-                    lp.respuesta_correcta,
+                lp.enunciado,
+                lp.opcion_a,
+                lp.opcion_b,
+                lp.opcion_c,
+                lp.opcion_d,
+                lp.respuesta_correcta,
 
-                    lp.tipo_clasificacion,
-                    lp.tipo_norma,
-                    lp.nombre_norma,
-                    lp.articulo,
-                    lp.tema_no_juridico,
+                lp.tipo_clasificacion,
+                lp.tipo_norma,
+                lp.nombre_norma,
+                lp.articulo,
+                lp.tema_no_juridico,
 
-                    lp.origen_oposicion,
-                    lp.tipo_fuente,
-                    lp.importacion_fichero_id,
-                    lp.pagina_origen,
+                lp.origen_oposicion,
+                lp.tipo_fuente,
+                lp.importacion_fichero_id,
+                lp.pagina_origen,
 
-                    lp.norma_id_normalizada,
-                    lp.articulo_normalizado,
-                    lp.teorica_practica,
-                    lp.tipo_norma_normalizado,
-                    lp.nombre_norma_normalizado,
+                lp.norma_id_normalizada,
+                lp.articulo_normalizado,
+                lp.teorica_practica,
+                lp.tipo_norma_normalizado,
+                lp.nombre_norma_normalizado,
 
-                    bp.tipo_vinculacion,
-                    bp.estado AS banco_estado,
-                    bp.metodo_vinculacion,
-                    bp.motivo_revision,
+                bp.tipo_vinculacion,
+                bp.estado AS banco_estado,
+                bp.metodo_vinculacion,
+                bp.motivo_revision,
 
-                    tt.id AS tema_id,
-                    tt.parte AS tema_parte,
-                    tt.numero_tema,
-                    tt.titulo AS tema_titulo,
-                    tt.tipo_contenido AS tema_tipo_contenido,
+                tt.id AS tema_id,
+                tt.parte AS tema_parte,
+                tt.numero_tema,
+                tt.titulo AS tema_titulo,
+                tt.tipo_contenido AS tema_tipo_contenido
 
-                    CASE
-                        WHEN tt.parte = 'GENERAL'
-                            THEN 'general'
+            FROM banco_preguntas bp
 
-                        WHEN tt.parte = 'ESPECIAL'
-                             AND lp.tipo_clasificacion = 'INFORMATICA'
-                            THEN 'especial_informatica'
+            JOIN convocatoria_partes cp
+                ON cp.id = bp.convocatoria_parte_id
+               AND cp.convocatoria_id = bp.convocatoria_id
 
-                        WHEN tt.parte = 'ESPECIAL'
-                             AND lp.teorica_practica = 'PRACTICA'
-                            THEN 'especial_practica'
+            JOIN lote_preguntas lp
+                ON lp.id = bp.pregunta_id
 
-                        WHEN tt.parte = 'ESPECIAL'
-                             AND lp.teorica_practica = 'TEORICA'
-                            THEN 'especial_teoria'
-                    END AS nombre_parte
+            JOIN banco_preguntas_temas bpt
+                ON bpt.banco_pregunta_id = bp.id
+               AND bpt.es_principal = 1
 
-                FROM banco_preguntas bp
+            JOIN temario_temas tt
+                ON tt.id = bpt.tema_id
 
-                JOIN lote_preguntas lp
-                    ON lp.id = bp.pregunta_id
-
-                JOIN banco_preguntas_temas bpt
-                    ON bpt.banco_pregunta_id = bp.id
-                   AND bpt.es_principal = 1
-
-                JOIN temario_temas tt
-                    ON tt.id = bpt.tema_id
-
-                WHERE bp.convocatoria_id = ?
-                  AND bp.estado = 'INCLUIDA'
-                  AND (
-                        lp.origen_oposicion IS NULL
-                        OR TRIM(lp.origen_oposicion) = ''
-                        OR UPPER(TRIM(lp.origen_oposicion))
-                            IN ({marcadores_origen})
-                  )
-            )
-
-            SELECT *
-            FROM preguntas_clasificadas
-            WHERE nombre_parte IS NOT NULL
+            WHERE bp.convocatoria_id = ?
+              AND bp.estado = 'INCLUIDA'
+              AND (
+                    lp.origen_oposicion IS NULL
+                    OR TRIM(lp.origen_oposicion) = ''
+                    OR UPPER(TRIM(lp.origen_oposicion))
+                        IN ({marcadores_origen})
+              )
             """,
             (
                 convocatoria_id,
@@ -653,7 +613,7 @@ def crear_simulacro(
         candidatas_parte = [
             pregunta
             for pregunta in candidatas
-            if pregunta["nombre_parte"] == parte["nombre"]
+            if pregunta["convocatoria_parte_id"] == parte["id"]
             and pregunta["pregunta_id"] not in preguntas_usadas
         ]
 
