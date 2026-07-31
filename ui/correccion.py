@@ -84,12 +84,9 @@ def marcar_correccion_modificada(
 
 def mostrar_analisis_rendimiento(
     resultado_actual: dict,
+    resultado_acumulado: dict,
 ) -> None:
     """Muestra y, bajo petición, genera el análisis IA acumulado."""
-
-    resultado_acumulado = obtener_resultado_acumulado_convocatoria(
-        resultado_actual["convocatoria_id"]
-    )
 
     st.divider()
     st.subheader("Análisis acumulado de la convocatoria")
@@ -102,8 +99,9 @@ def mostrar_analisis_rendimiento(
         return
 
     st.caption(
-        "El análisis utiliza todos los simulacros corregidos que se "
-        "conservan actualmente en esta convocatoria, no solo esta "
+        "El análisis utiliza todas las pruebas corregidas del mismo "
+        "tipo que la prueba abierta y que se conservan actualmente en "
+        "esta convocatoria, no solo esta "
         "corrección. Si se elimina o modifica un simulacro, los datos "
         "se recalculan."
     )
@@ -164,12 +162,14 @@ def mostrar_analisis_rendimiento(
         }
         st.rerun()
 
+
 def mostrar_resultado(
     resultado: dict,
     nombre_prueba: str = "simulacro",
 ) -> None:
     """
-    Muestra el informe objetivo de la corrección.
+    Muestra el resultado particular de la prueba y las estadísticas
+    acumuladas de los simulacros conservados de la convocatoria.
     """
 
     st.subheader("Resultado")
@@ -203,25 +203,53 @@ def mostrar_resultado(
     )
 
     st.caption(
-        "La nota se ha calculado con las reglas de puntuación "
-        "configuradas en la convocatoria."
+        "Este bloque corresponde exclusivamente al "
+        f"{nombre_prueba} abierto. La nota se ha calculado con las "
+        "reglas de puntuación configuradas en la convocatoria."
+    )
+
+    resultado_acumulado = (
+        obtener_resultado_acumulado_convocatoria(
+            resultado["convocatoria_id"],
+            tipo_prueba=resultado["tipo_prueba"],
+        )
     )
 
     st.divider()
-    st.subheader("Resultados por tema")
+    tipo_acumulado = (
+        "tests"
+        if resultado["tipo_prueba"] == "TEST"
+        else "simulacros"
+    )
+
+    st.subheader("Rendimiento acumulado de la convocatoria")
+
+    if resultado_acumulado["simulacros"] <= 0:
+        st.info(
+            "Todavía no existen simulacros corregidos para mostrar "
+            "estadísticas acumuladas."
+        )
+        return
+
+    st.info(
+        f"Las tablas siguientes corresponden a todos los {tipo_acumulado} "
+        "corregidos que se conservan actualmente en esta convocatoria, "
+        "no únicamente al simulacro abierto. Si se modifica o elimina "
+        "un simulacro, los resultados se recalculan automáticamente."
+    )
+
+    st.write(
+        f'**Datos acumulados:** {resultado_acumulado["simulacros"]} '
+        f'{tipo_acumulado} · {resultado_acumulado["preguntas"]} preguntas · '
+        f'{resultado_acumulado["contestadas"]} contestadas · '
+        f'{resultado_acumulado["no_contestadas"]} no contestadas.'
+    )
+
+    st.subheader("Resultados acumulados por tema")
 
     datos_temas = []
 
-    temas_ordenados = sorted(
-        resultado["temas"],
-        key=lambda tema: (
-            -tema["porcentaje_simulacro"],
-            tema["parte"],
-            tema["numero_tema"],
-        ),
-    )
-
-    for tema in temas_ordenados:
+    for tema in resultado_acumulado["temas"]:
         datos_temas.append(
             {
                 "Tema": (
@@ -230,8 +258,8 @@ def mostrar_resultado(
                     f'{tema["titulo"]}'
                 ),
                 "Preguntas": tema["preguntas"],
-                f"% del {nombre_prueba}": (
-                    f'{tema["porcentaje_simulacro"]:.1f} %'
+                "% acumulado": (
+                    f'{tema["porcentaje_convocatoria"]:.1f} %'
                 ),
                 "Aciertos": tema["aciertos"],
                 "% aciertos": (
@@ -241,9 +269,7 @@ def mostrar_resultado(
                 "% fallos": (
                     f'{tema["porcentaje_fallos"]:.1f} %'
                 ),
-                "No contestadas": tema[
-                    "no_contestadas"
-                ],
+                "No contestadas": tema["no_contestadas"],
             }
         )
 
@@ -254,17 +280,54 @@ def mostrar_resultado(
     )
 
     st.caption(
-        "Los porcentajes de aciertos y fallos de cada tema "
-        "se calculan sobre el total de preguntas de ese tema. "
-        "Las no contestadas no se consideran fallos."
+        "El porcentaje acumulado indica el peso de cada tema sobre "
+        "todas las preguntas analizadas. Los porcentajes de aciertos "
+        "y fallos se calculan sobre el total de preguntas de ese tema."
     )
 
     st.divider()
-    st.subheader("Resultados por nivel de seguridad")
+    st.subheader("Resultados acumulados por ley o norma")
+
+    datos_normas = []
+
+    for norma in resultado_acumulado["normas"]:
+        datos_normas.append(
+            {
+                "Ley o norma": norma["norma"],
+                "Preguntas": norma["preguntas"],
+                "% acumulado": (
+                    f'{norma["porcentaje_convocatoria"]:.1f} %'
+                ),
+                "Aciertos": norma["aciertos"],
+                "% aciertos": (
+                    f'{norma["porcentaje_aciertos"]:.1f} %'
+                ),
+                "Fallos": norma["fallos"],
+                "% fallos": (
+                    f'{norma["porcentaje_fallos"]:.1f} %'
+                ),
+                "No contestadas": norma["no_contestadas"],
+            }
+        )
+
+    st.dataframe(
+        datos_normas,
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    st.caption(
+        "Las preguntas jurídicas se agrupan por la ley o norma "
+        "congelada en cada simulacro. Las preguntas de informática "
+        "aparecen agrupadas como «Informática»."
+    )
+
+    st.divider()
+    st.subheader("Resultados acumulados por nivel de seguridad")
 
     datos_seguridad = []
 
-    for seguridad in resultado["seguridad"]:
+    for seguridad in resultado_acumulado["seguridad"]:
         datos_seguridad.append(
             {
                 "Seguridad": seguridad["seguridad"],
@@ -287,13 +350,16 @@ def mostrar_resultado(
     )
 
     st.caption(
-        "En esta tabla los porcentajes se calculan sobre las "
-        "preguntas contestadas con cada nivel de seguridad."
+        "Los porcentajes se calculan sobre todas las preguntas "
+        f"contestadas con cada nivel de seguridad en los {tipo_acumulado} "
+        "conservados."
     )
 
     mostrar_analisis_rendimiento(
         resultado_actual=resultado,
+        resultado_acumulado=resultado_acumulado,
     )
+
 
 def mostrar_correccion(
     simulacro_id: int,

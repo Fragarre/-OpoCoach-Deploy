@@ -7,6 +7,7 @@ from lib.repositorio import (
     eliminar_test,
     obtener_convocatoria,
     obtener_preguntas_simulacro,
+    obtener_normas_test,
     obtener_puntos_temario_test,
     obtener_tests,
 )
@@ -83,7 +84,12 @@ if resultado_creacion is not None:
     for aviso in resultado_creacion["avisos"]:
         st.warning(aviso)
 
-puntos = obtener_puntos_temario_test(convocatoria_id)
+puntos = obtener_puntos_temario_test(
+    convocatoria_id
+)
+normas = obtener_normas_test(
+    convocatoria_id
+)
 
 puntos_disponibles = [
     punto
@@ -91,12 +97,11 @@ puntos_disponibles = [
     if punto["disponibles"] > 0
 ]
 
-if not puntos_disponibles:
-    st.warning(
-        "No hay puntos del temario con preguntas disponibles "
-        "para esta convocatoria."
-    )
-    st.stop()
+normas_disponibles = [
+    norma
+    for norma in normas
+    if norma["disponibles"] > 0
+]
 
 opciones_puntos = {
     int(punto["id"]): (
@@ -107,7 +112,27 @@ opciones_puntos = {
     for punto in puntos_disponibles
 }
 
-with st.form("formulario_crear_test"):
+opciones_normas = {
+    str(norma["norma_clave"]): (
+        f'{norma["norma_nombre"]} '
+        f'({norma["disponibles"]} disponibles)'
+    )
+    for norma in normas_disponibles
+}
+
+modo_etiqueta = st.radio(
+    "Generar preguntas por",
+    options=[
+        "Puntos del temario",
+        "Ley o norma",
+    ],
+    horizontal=True,
+    key=f"modo_creacion_test_{convocatoria_id}",
+)
+
+with st.form(
+    f"formulario_crear_test_{modo_etiqueta}_{convocatoria_id}"
+):
     numero_preguntas = st.number_input(
         "Número de preguntas",
         min_value=1,
@@ -115,11 +140,41 @@ with st.form("formulario_crear_test"):
         step=1,
     )
 
-    temas_seleccionados = st.multiselect(
-        "Puntos del temario",
-        options=list(opciones_puntos),
-        format_func=lambda tema_id: opciones_puntos[tema_id],
-    )
+    temas_seleccionados: list[int] = []
+    normas_seleccionadas: list[str] = []
+
+    if modo_etiqueta == "Puntos del temario":
+        if puntos_disponibles:
+            temas_seleccionados = st.multiselect(
+                "Puntos del temario",
+                options=list(opciones_puntos),
+                format_func=(
+                    lambda tema_id: opciones_puntos[
+                        tema_id
+                    ]
+                ),
+                key=f"temas_test_{convocatoria_id}",
+            )
+        else:
+            st.info(
+                "No hay puntos del temario con preguntas "
+                "disponibles para esta convocatoria."
+            )
+    else:
+        if normas_disponibles:
+            normas_seleccionadas = st.multiselect(
+                "Leyes o normas",
+                options=list(opciones_normas),
+                format_func=(
+                    lambda clave: opciones_normas[clave]
+                ),
+                key=f"normas_test_{convocatoria_id}",
+            )
+        else:
+            st.info(
+                "No hay leyes o normas con preguntas "
+                "disponibles para esta convocatoria."
+            )
 
     crear = st.form_submit_button(
         "Crear test",
@@ -128,14 +183,35 @@ with st.form("formulario_crear_test"):
     )
 
 if crear:
-    if not temas_seleccionados:
-        st.error("Debe seleccionar al menos un punto del temario.")
+    modo_seleccion = (
+        "TEMA"
+        if modo_etiqueta == "Puntos del temario"
+        else "NORMA"
+    )
+
+    seleccion_vacia = (
+        not temas_seleccionados
+        if modo_seleccion == "TEMA"
+        else not normas_seleccionadas
+    )
+
+    if seleccion_vacia:
+        if modo_seleccion == "TEMA":
+            st.error(
+                "Debe seleccionar al menos un punto del temario."
+            )
+        else:
+            st.error(
+                "Debe seleccionar al menos una ley o norma."
+            )
     else:
         try:
             resultado = crear_test(
                 convocatoria_id=convocatoria_id,
                 numero_preguntas=int(numero_preguntas),
                 temas_seleccionados=temas_seleccionados,
+                normas_seleccionadas=normas_seleccionadas,
+                modo_seleccion=modo_seleccion,
             )
 
             st.session_state[
@@ -145,7 +221,9 @@ if crear:
             st.rerun()
 
         except Exception as exc:
-            st.error(f"No se ha podido crear el test: {exc}")
+            st.error(
+                f"No se ha podido crear el test: {exc}"
+            )
 
 st.divider()
 

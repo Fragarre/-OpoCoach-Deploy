@@ -79,6 +79,24 @@ def construir_prompt_analisis_rendimiento(
             f'{tema["fallos_muy_seguro"]} fallos marcados como Muy seguro.'
         )
 
+    lineas_normas = []
+
+    for norma in resultado_acumulado["normas"]:
+        lineas_normas.append(
+            "- "
+            f'{norma["norma"]}: '
+            f'{norma["preguntas"]} preguntas; '
+            f'{norma["aciertos"]} aciertos; '
+            f'{norma["fallos"]} fallos; '
+            f'{norma["no_contestadas"]} no contestadas; '
+            f'{norma["porcentaje_aciertos"]:.1f} % de aciertos '
+            "sobre el total; "
+            f'{norma["porcentaje_aciertos_contestadas"]:.1f} % de '
+            "aciertos entre las contestadas; "
+            f'{norma["fallos_muy_seguro"]} fallos marcados como '
+            "Muy seguro."
+        )
+
     lineas_seguridad = []
 
     for seguridad in resultado_acumulado["seguridad"]:
@@ -125,8 +143,9 @@ REGLAS OBLIGATORIAS
 3. Distingue con claridad entre datos sólidos y muestras pequeñas.
 4. Considera reducida cualquier muestra inferior a 5 preguntas y evita
    conclusiones firmes basadas en ella.
-5. Para priorizar el estudio, valora conjuntamente el número de preguntas,
-   los fallos, las no contestadas y los fallos marcados como Muy seguro.
+5. Para priorizar el estudio, valora conjuntamente los resultados
+   acumulados por tema y por ley o norma, el número de preguntas, los
+   fallos, las no contestadas y los fallos marcados como Muy seguro.
 6. No conviertas automáticamente el tema con menor porcentaje en la máxima
    prioridad si su muestra es insuficiente.
 7. La estrategia de riesgo debe apoyarse en el umbral de equilibrio ya
@@ -173,6 +192,10 @@ REGLAS DE PUNTUACIÓN DEL SIMULACRO ACTUAL
 RESULTADOS ACUMULADOS POR TEMA
 
 {chr(10).join(lineas_temas)}
+
+RESULTADOS ACUMULADOS POR LEY O NORMA
+
+{chr(10).join(lineas_normas)}
 
 RESULTADOS ACUMULADOS POR NIVEL DE SEGURIDAD
 

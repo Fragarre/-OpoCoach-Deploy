@@ -138,7 +138,7 @@ def obtener_simulacros(
                 END AS corregido
             FROM simulacros s
             WHERE s.convocatoria_id = ?
-              AND s.tipo_prueba = 'SIMULACRO'
+              AND s.tipo_prueba = ?
             ORDER BY s.numero DESC
             """,
             (convocatoria_id,),
@@ -1285,6 +1285,108 @@ def obtener_puntos_temario_test(
         ).fetchall()
 
 
+
+def obtener_normas_test(
+    convocatoria_id: int,
+) -> list[sqlite3.Row]:
+    """
+    Obtiene las leyes o normas con preguntas disponibles para crear tests.
+
+    La identidad de una norma es inequívoca:
+        - norma_id_normalizada, cuando existe.
+        - nombre normalizado, solo como respaldo si no existe ID.
+
+    El nombre mostrado se toma de normas.nombre_canonico cuando hay ID.
+    """
+
+    with conectar() as con:
+        return con.execute(
+            """
+            SELECT
+                CASE
+                    WHEN lp.norma_id_normalizada IS NOT NULL
+                        THEN 'ID:' || CAST(
+                            lp.norma_id_normalizada AS TEXT
+                        )
+                    ELSE 'NOMBRE:' || LOWER(
+                        TRIM(
+                            COALESCE(
+                                NULLIF(
+                                    TRIM(lp.nombre_norma_normalizado),
+                                    ''
+                                ),
+                                NULLIF(
+                                    TRIM(lp.nombre_norma),
+                                    ''
+                                )
+                            )
+                        )
+                    )
+                END AS norma_clave,
+
+                COALESCE(
+                    MAX(n.nombre_canonico),
+                    MIN(
+                        COALESCE(
+                            NULLIF(
+                                TRIM(lp.nombre_norma_normalizado),
+                                ''
+                            ),
+                            NULLIF(
+                                TRIM(lp.nombre_norma),
+                                ''
+                            )
+                        )
+                    )
+                ) AS norma_nombre,
+
+                COUNT(
+                    DISTINCT bp.pregunta_id
+                ) AS disponibles
+
+            FROM banco_preguntas bp
+
+            JOIN lote_preguntas lp
+                ON lp.id = bp.pregunta_id
+
+            LEFT JOIN normas n
+                ON n.id = lp.norma_id_normalizada
+
+            WHERE bp.convocatoria_id = ?
+              AND bp.estado = 'INCLUIDA'
+              AND UPPER(
+                    TRIM(
+                        COALESCE(
+                            lp.tipo_clasificacion,
+                            ''
+                        )
+                    )
+                  ) <> 'INFORMATICA'
+              AND (
+                    lp.norma_id_normalizada IS NOT NULL
+                    OR COALESCE(
+                        NULLIF(
+                            TRIM(lp.nombre_norma_normalizado),
+                            ''
+                        ),
+                        NULLIF(
+                            TRIM(lp.nombre_norma),
+                            ''
+                        )
+                    ) IS NOT NULL
+                  )
+
+            GROUP BY
+                norma_clave
+
+            ORDER BY
+                norma_nombre
+            """,
+            (convocatoria_id,),
+        ).fetchall()
+
+
+
 def obtener_tests(
     convocatoria_id: int,
 ) -> list[sqlite3.Row]:
@@ -1346,10 +1448,11 @@ def _repartir_proporcionalmente(
 
     orden_resto = sorted(
         disponibilidades,
-        key=lambda tema_id: (
-            cuotas_exactas[tema_id] - int(cuotas_exactas[tema_id]),
-            disponibilidades[tema_id],
-            -tema_id,
+        key=lambda elemento_id: (
+            cuotas_exactas[elemento_id]
+            - int(cuotas_exactas[elemento_id]),
+            disponibilidades[elemento_id],
+            str(elemento_id),
         ),
         reverse=True,
     )
@@ -1375,13 +1478,19 @@ def _repartir_proporcionalmente(
 def crear_test(
     convocatoria_id: int,
     numero_preguntas: int,
-    temas_seleccionados: list[int],
+    temas_seleccionados: list[int] | None = None,
+    normas_seleccionadas: list[str] | None = None,
+    modo_seleccion: str = "TEMA",
 ) -> dict:
     """
-    Crea un test proporcional entre los puntos del temario seleccionados.
+    Crea un test proporcionalmente entre los elementos seleccionados.
 
-    El test queda congelado en usuario.sqlite3 con la misma estructura
-    autónoma utilizada por los simulacros.
+    modo_seleccion:
+        - TEMA: puntos del temario.
+        - NORMA: leyes o normas.
+
+    Ambos modos congelan las preguntas con la misma estructura utilizada
+    por los simulacros y comparten el mismo sistema de corrección.
     """
 
     if numero_preguntas <= 0:
@@ -1389,14 +1498,36 @@ def crear_test(
             "El número de preguntas debe ser mayor que cero."
         )
 
-    temas_ids = sorted({int(tema_id) for tema_id in temas_seleccionados})
+    modo = str(modo_seleccion).strip().upper()
 
-    if not temas_ids:
+    if modo not in {"TEMA", "NORMA"}:
+        raise ValueError(
+            "El modo de selección del test no es válido."
+        )
+
+    temas_ids = sorted(
+        {
+            int(tema_id)
+            for tema_id in (temas_seleccionados or [])
+        }
+    )
+    normas_claves = sorted(
+        {
+            str(clave).strip()
+            for clave in (normas_seleccionadas or [])
+            if str(clave).strip()
+        }
+    )
+
+    if modo == "TEMA" and not temas_ids:
         raise ValueError(
             "Debe seleccionar al menos un punto del temario."
         )
 
-    marcadores = ", ".join("?" for _ in temas_ids)
+    if modo == "NORMA" and not normas_claves:
+        raise ValueError(
+            "Debe seleccionar al menos una ley o norma."
+        )
 
     with conectar() as con_catalogo:
         convocatoria = con_catalogo.execute(
@@ -1422,112 +1553,306 @@ def crear_test(
         if convocatoria is None:
             raise ValueError("La convocatoria no existe.")
 
-        temas = con_catalogo.execute(
-            f"""
-            SELECT
-                tt.id,
-                tt.parte,
-                tt.numero_tema,
-                tt.titulo,
-                tt.tipo_contenido
-            FROM temario_temas tt
-            JOIN temarios t
-                ON t.id = tt.temario_id
-            WHERE t.convocatoria_id = ?
-              AND tt.id IN ({marcadores})
-            ORDER BY tt.parte, tt.numero_tema, tt.titulo
-            """,
-            (convocatoria_id, *temas_ids),
-        ).fetchall()
-
-        if len(temas) != len(temas_ids):
-            raise ValueError(
-                "Alguno de los puntos seleccionados no pertenece "
-                "a la convocatoria."
+        if modo == "TEMA":
+            marcadores = ", ".join(
+                "?"
+                for _ in temas_ids
             )
 
-        candidatas = con_catalogo.execute(
-            f"""
-            SELECT DISTINCT
-                bp.id AS banco_pregunta_id,
-                bp.pregunta_id,
+            elementos = con_catalogo.execute(
+                f"""
+                SELECT
+                    tt.id AS elemento_id,
+                    (
+                        tt.numero_tema || '. '
+                        || tt.parte || ' — '
+                        || tt.titulo
+                    ) AS elemento_nombre
+                FROM temario_temas tt
+                JOIN temarios t
+                    ON t.id = tt.temario_id
+                WHERE t.convocatoria_id = ?
+                  AND tt.id IN ({marcadores})
+                ORDER BY
+                    tt.parte,
+                    tt.numero_tema,
+                    tt.titulo
+                """,
+                (
+                    convocatoria_id,
+                    *temas_ids,
+                ),
+            ).fetchall()
 
-                lp.enunciado,
-                lp.opcion_a,
-                lp.opcion_b,
-                lp.opcion_c,
-                lp.opcion_d,
-                lp.respuesta_correcta,
+            if len(elementos) != len(temas_ids):
+                raise ValueError(
+                    "Alguno de los puntos seleccionados no pertenece "
+                    "a la convocatoria."
+                )
 
-                lp.tipo_clasificacion,
-                lp.tipo_norma,
-                lp.nombre_norma,
-                lp.articulo,
-                lp.tema_no_juridico,
+            candidatas = con_catalogo.execute(
+                f"""
+                SELECT DISTINCT
+                    bp.id AS banco_pregunta_id,
+                    bp.pregunta_id,
 
-                lp.origen_oposicion,
-                lp.tipo_fuente,
-                lp.importacion_fichero_id,
-                lp.pagina_origen,
+                    lp.enunciado,
+                    lp.opcion_a,
+                    lp.opcion_b,
+                    lp.opcion_c,
+                    lp.opcion_d,
+                    lp.respuesta_correcta,
 
-                lp.norma_id_normalizada,
-                lp.articulo_normalizado,
-                lp.teorica_practica,
-                lp.tipo_norma_normalizado,
-                lp.nombre_norma_normalizado,
+                    lp.tipo_clasificacion,
+                    lp.tipo_norma,
+                    lp.nombre_norma,
+                    lp.articulo,
+                    lp.tema_no_juridico,
 
-                bp.tipo_vinculacion,
-                bp.estado AS banco_estado,
-                bp.metodo_vinculacion,
-                bp.motivo_revision,
+                    lp.origen_oposicion,
+                    lp.tipo_fuente,
+                    lp.importacion_fichero_id,
+                    lp.pagina_origen,
 
-                tt.id AS tema_id,
-                tt.parte AS tema_parte,
-                tt.numero_tema,
-                tt.titulo AS tema_titulo,
-                tt.tipo_contenido AS tema_tipo_contenido
+                    lp.norma_id_normalizada,
+                    lp.articulo_normalizado,
+                    lp.teorica_practica,
+                    lp.tipo_norma_normalizado,
+                    lp.nombre_norma_normalizado,
 
-            FROM banco_preguntas bp
+                    bp.tipo_vinculacion,
+                    bp.estado AS banco_estado,
+                    bp.metodo_vinculacion,
+                    bp.motivo_revision,
 
-            JOIN lote_preguntas lp
-                ON lp.id = bp.pregunta_id
+                    tt.id AS tema_id,
+                    tt.parte AS tema_parte,
+                    tt.numero_tema,
+                    tt.titulo AS tema_titulo,
+                    tt.tipo_contenido AS tema_tipo_contenido,
 
-            JOIN banco_preguntas_temas bpt
-                ON bpt.banco_pregunta_id = bp.id
-               AND bpt.es_principal = 1
+                    CAST(tt.id AS TEXT) AS elemento_id
 
-            JOIN temario_temas tt
-                ON tt.id = bpt.tema_id
+                FROM banco_preguntas bp
 
-            WHERE bp.convocatoria_id = ?
-              AND bp.estado = 'INCLUIDA'
-              AND tt.id IN ({marcadores})
-            """,
-            (
-                convocatoria_id,
-                *temas_ids,
-            ),
-        ).fetchall()
+                JOIN lote_preguntas lp
+                    ON lp.id = bp.pregunta_id
 
-    candidatas_por_tema: dict[int, list[sqlite3.Row]] = {
-        tema_id: [] for tema_id in temas_ids
+                JOIN banco_preguntas_temas bpt
+                    ON bpt.banco_pregunta_id = bp.id
+                   AND bpt.es_principal = 1
+
+                JOIN temario_temas tt
+                    ON tt.id = bpt.tema_id
+
+                WHERE bp.convocatoria_id = ?
+                  AND bp.estado = 'INCLUIDA'
+                  AND tt.id IN ({marcadores})
+                """,
+                (
+                    convocatoria_id,
+                    *temas_ids,
+                ),
+            ).fetchall()
+
+            claves_elementos = [
+                str(tema_id)
+                for tema_id in temas_ids
+            ]
+
+        else:
+            marcadores = ", ".join(
+                "?"
+                for _ in normas_claves
+            )
+
+            expresion_clave_norma = """
+                CASE
+                    WHEN lp.norma_id_normalizada IS NOT NULL
+                        THEN 'ID:' || CAST(
+                            lp.norma_id_normalizada AS TEXT
+                        )
+                    ELSE 'NOMBRE:' || LOWER(
+                        TRIM(
+                            COALESCE(
+                                NULLIF(
+                                    TRIM(lp.nombre_norma_normalizado),
+                                    ''
+                                ),
+                                NULLIF(
+                                    TRIM(lp.nombre_norma),
+                                    ''
+                                )
+                            )
+                        )
+                    )
+                END
+            """
+
+            elementos = con_catalogo.execute(
+                f"""
+                SELECT
+                    {expresion_clave_norma} AS elemento_id,
+
+                    COALESCE(
+                        MAX(n.nombre_canonico),
+                        MIN(
+                            COALESCE(
+                                NULLIF(
+                                    TRIM(lp.nombre_norma_normalizado),
+                                    ''
+                                ),
+                                NULLIF(
+                                    TRIM(lp.nombre_norma),
+                                    ''
+                                )
+                            )
+                        )
+                    ) AS elemento_nombre
+
+                FROM banco_preguntas bp
+
+                JOIN lote_preguntas lp
+                    ON lp.id = bp.pregunta_id
+
+                LEFT JOIN normas n
+                    ON n.id = lp.norma_id_normalizada
+
+                WHERE bp.convocatoria_id = ?
+                  AND bp.estado = 'INCLUIDA'
+                  AND UPPER(
+                        TRIM(
+                            COALESCE(
+                                lp.tipo_clasificacion,
+                                ''
+                            )
+                        )
+                      ) <> 'INFORMATICA'
+                  AND {expresion_clave_norma}
+                        IN ({marcadores})
+
+                GROUP BY
+                    elemento_id
+
+                ORDER BY
+                    elemento_nombre
+                """,
+                (
+                    convocatoria_id,
+                    *normas_claves,
+                ),
+            ).fetchall()
+
+            if len(elementos) != len(normas_claves):
+                raise ValueError(
+                    "Alguna de las normas seleccionadas no pertenece "
+                    "al banco de la convocatoria."
+                )
+
+            candidatas = con_catalogo.execute(
+                f"""
+                SELECT DISTINCT
+                    bp.id AS banco_pregunta_id,
+                    bp.pregunta_id,
+
+                    lp.enunciado,
+                    lp.opcion_a,
+                    lp.opcion_b,
+                    lp.opcion_c,
+                    lp.opcion_d,
+                    lp.respuesta_correcta,
+
+                    lp.tipo_clasificacion,
+                    lp.tipo_norma,
+                    lp.nombre_norma,
+                    lp.articulo,
+                    lp.tema_no_juridico,
+
+                    lp.origen_oposicion,
+                    lp.tipo_fuente,
+                    lp.importacion_fichero_id,
+                    lp.pagina_origen,
+
+                    lp.norma_id_normalizada,
+                    lp.articulo_normalizado,
+                    lp.teorica_practica,
+                    lp.tipo_norma_normalizado,
+                    lp.nombre_norma_normalizado,
+
+                    bp.tipo_vinculacion,
+                    bp.estado AS banco_estado,
+                    bp.metodo_vinculacion,
+                    bp.motivo_revision,
+
+                    tt.id AS tema_id,
+                    tt.parte AS tema_parte,
+                    tt.numero_tema,
+                    tt.titulo AS tema_titulo,
+                    tt.tipo_contenido AS tema_tipo_contenido,
+
+                    {expresion_clave_norma} AS elemento_id
+
+                FROM banco_preguntas bp
+
+                JOIN lote_preguntas lp
+                    ON lp.id = bp.pregunta_id
+
+                JOIN banco_preguntas_temas bpt
+                    ON bpt.banco_pregunta_id = bp.id
+                   AND bpt.es_principal = 1
+
+                JOIN temario_temas tt
+                    ON tt.id = bpt.tema_id
+
+                WHERE bp.convocatoria_id = ?
+                  AND bp.estado = 'INCLUIDA'
+                  AND UPPER(
+                        TRIM(
+                            COALESCE(
+                                lp.tipo_clasificacion,
+                                ''
+                            )
+                        )
+                      ) <> 'INFORMATICA'
+                  AND {expresion_clave_norma}
+                        IN ({marcadores})
+                """,
+                (
+                    convocatoria_id,
+                    *normas_claves,
+                ),
+            ).fetchall()
+
+            claves_elementos = normas_claves
+
+    candidatas_por_elemento: dict[
+        str,
+        list[sqlite3.Row],
+    ] = {
+        clave: []
+        for clave in claves_elementos
     }
 
     for pregunta in candidatas:
-        candidatas_por_tema[int(pregunta["tema_id"])].append(
-            pregunta
-        )
+        clave = str(pregunta["elemento_id"])
+
+        if clave in candidatas_por_elemento:
+            candidatas_por_elemento[clave].append(
+                pregunta
+            )
 
     disponibilidades = {
-        tema_id: len(preguntas)
-        for tema_id, preguntas in candidatas_por_tema.items()
+        clave: len(preguntas)
+        for clave, preguntas
+        in candidatas_por_elemento.items()
     }
-    total_disponible = sum(disponibilidades.values())
+    total_disponible = sum(
+        disponibilidades.values()
+    )
 
     if total_disponible == 0:
         raise ValueError(
-            "No hay preguntas disponibles para los puntos "
-            "seleccionados."
+            "No hay preguntas disponibles para la selección realizada."
         )
 
     reparto = _repartir_proporcionalmente(
@@ -1538,38 +1863,86 @@ def crear_test(
     preguntas_seleccionadas: list[sqlite3.Row] = []
     preguntas_usadas: set[int] = set()
 
-    for tema in temas:
-        tema_id = int(tema["id"])
-        cantidad = reparto[tema_id]
-        disponibles_tema = [
+    for elemento in elementos:
+        clave = str(elemento["elemento_id"])
+        cantidad = reparto[clave]
+
+        disponibles_elemento = [
             pregunta
-            for pregunta in candidatas_por_tema[tema_id]
-            if int(pregunta["pregunta_id"]) not in preguntas_usadas
+            for pregunta
+            in candidatas_por_elemento[clave]
+            if int(pregunta["pregunta_id"])
+            not in preguntas_usadas
         ]
 
-        elegidas = random.sample(
-            disponibles_tema,
+        cantidad_real = min(
             cantidad,
+            len(disponibles_elemento),
+        )
+
+        elegidas = random.sample(
+            disponibles_elemento,
+            cantidad_real,
         )
 
         for pregunta in elegidas:
-            preguntas_usadas.add(int(pregunta["pregunta_id"]))
-            preguntas_seleccionadas.append(pregunta)
+            preguntas_usadas.add(
+                int(pregunta["pregunta_id"])
+            )
+            preguntas_seleccionadas.append(
+                pregunta
+            )
+
+    if len(preguntas_seleccionadas) < min(
+        numero_preguntas,
+        total_disponible,
+    ):
+        restantes = [
+            pregunta
+            for preguntas_elemento
+            in candidatas_por_elemento.values()
+            for pregunta in preguntas_elemento
+            if int(pregunta["pregunta_id"])
+            not in preguntas_usadas
+        ]
+
+        faltan = min(
+            numero_preguntas,
+            total_disponible,
+        ) - len(preguntas_seleccionadas)
+
+        if faltan > 0:
+            adicionales = random.sample(
+                restantes,
+                min(faltan, len(restantes)),
+            )
+
+            for pregunta in adicionales:
+                preguntas_usadas.add(
+                    int(pregunta["pregunta_id"])
+                )
+                preguntas_seleccionadas.append(
+                    pregunta
+                )
 
     random.shuffle(preguntas_seleccionadas)
-    total_generado = len(preguntas_seleccionadas)
+    total_generado = len(
+        preguntas_seleccionadas
+    )
 
     if total_generado == 0:
-        raise ValueError("No se ha podido generar el test.")
+        raise ValueError(
+            "No se ha podido generar el test."
+        )
 
     avisos: list[str] = []
 
     if total_generado < numero_preguntas:
         avisos.append(
             f"Se solicitaron {numero_preguntas} preguntas, pero "
-            f"solo hay {total_generado} disponibles en los puntos "
-            "seleccionados. El test se ha creado con el máximo "
-            "disponible."
+            f"solo hay {total_generado} preguntas distintas "
+            "disponibles para la selección realizada. El test se ha "
+            "creado con el máximo disponible."
         )
 
     with conectar_usuario() as con_usuario:
@@ -1634,7 +2007,9 @@ def crear_test(
         test_id = cursor_test.lastrowid
 
         if test_id is None:
-            raise RuntimeError("No se ha podido crear el test.")
+            raise RuntimeError(
+                "No se ha podido crear el test."
+            )
 
         preguntas_para_guardar: list[dict] = []
 
@@ -1646,7 +2021,9 @@ def crear_test(
                 {
                     "orden": orden,
                     "pregunta_id": pregunta["pregunta_id"],
-                    "banco_pregunta_id": pregunta["banco_pregunta_id"],
+                    "banco_pregunta_id": pregunta[
+                        "banco_pregunta_id"
+                    ],
                     "parte_id": None,
                     "parte_nombre": pregunta["tema_parte"],
                     "parte_orden": pregunta["numero_tema"],
@@ -1655,32 +2032,62 @@ def crear_test(
                     "opcion_b": pregunta["opcion_b"],
                     "opcion_c": pregunta["opcion_c"],
                     "opcion_d": pregunta["opcion_d"],
-                    "respuesta_correcta": pregunta["respuesta_correcta"],
-                    "tipo_clasificacion": pregunta["tipo_clasificacion"],
+                    "respuesta_correcta": pregunta[
+                        "respuesta_correcta"
+                    ],
+                    "tipo_clasificacion": pregunta[
+                        "tipo_clasificacion"
+                    ],
                     "tipo_norma": pregunta["tipo_norma"],
                     "nombre_norma": pregunta["nombre_norma"],
                     "articulo": pregunta["articulo"],
-                    "tema_no_juridico": pregunta["tema_no_juridico"],
-                    "origen_oposicion": pregunta["origen_oposicion"],
+                    "tema_no_juridico": pregunta[
+                        "tema_no_juridico"
+                    ],
+                    "origen_oposicion": pregunta[
+                        "origen_oposicion"
+                    ],
                     "tipo_fuente": pregunta["tipo_fuente"],
-                    "importacion_fichero_id": pregunta["importacion_fichero_id"],
+                    "importacion_fichero_id": pregunta[
+                        "importacion_fichero_id"
+                    ],
                     "pagina_origen": pregunta["pagina_origen"],
-                    "norma_id_normalizada": pregunta["norma_id_normalizada"],
-                    "articulo_normalizado": pregunta["articulo_normalizado"],
-                    "teorica_practica": pregunta["teorica_practica"],
-                    "tipo_norma_normalizado": pregunta["tipo_norma_normalizado"],
-                    "nombre_norma_normalizado": pregunta["nombre_norma_normalizado"],
-                    "banco_tipo_vinculacion": pregunta["tipo_vinculacion"],
+                    "norma_id_normalizada": pregunta[
+                        "norma_id_normalizada"
+                    ],
+                    "articulo_normalizado": pregunta[
+                        "articulo_normalizado"
+                    ],
+                    "teorica_practica": pregunta[
+                        "teorica_practica"
+                    ],
+                    "tipo_norma_normalizado": pregunta[
+                        "tipo_norma_normalizado"
+                    ],
+                    "nombre_norma_normalizado": pregunta[
+                        "nombre_norma_normalizado"
+                    ],
+                    "banco_tipo_vinculacion": pregunta[
+                        "tipo_vinculacion"
+                    ],
                     "banco_estado": pregunta["banco_estado"],
-                    "banco_metodo_vinculacion": pregunta["metodo_vinculacion"],
-                    "banco_motivo_revision": pregunta["motivo_revision"],
+                    "banco_metodo_vinculacion": pregunta[
+                        "metodo_vinculacion"
+                    ],
+                    "banco_motivo_revision": pregunta[
+                        "motivo_revision"
+                    ],
                     "temas_json": json.dumps(
                         {
                             "tema_id_original": pregunta["tema_id"],
                             "parte": pregunta["tema_parte"],
-                            "numero_tema": pregunta["numero_tema"],
+                            "numero_tema": pregunta[
+                                "numero_tema"
+                            ],
                             "titulo": pregunta["tema_titulo"],
-                            "tipo_contenido": pregunta["tema_tipo_contenido"],
+                            "tipo_contenido": pregunta[
+                                "tema_tipo_contenido"
+                            ],
                             "es_principal": 1,
                         },
                         ensure_ascii=False,
@@ -1694,16 +2101,15 @@ def crear_test(
             preguntas_para_guardar,
         )
 
-
     return {
         "test_id": int(test_id),
         "numero": int(numero),
+        "modo_seleccion": modo,
         "total_solicitado": numero_preguntas,
         "total_generado": total_generado,
         "reparto": reparto,
         "avisos": avisos,
     }
-
 
 def eliminar_test(
     test_id: int,
@@ -1730,17 +2136,24 @@ def eliminar_test(
 
 def obtener_resultado_acumulado_convocatoria(
     convocatoria_id: int,
+    tipo_prueba: str = "SIMULACRO",
 ) -> dict:
     """
-    Calcula el rendimiento acumulado de los simulacros corregidos que
-    siguen existiendo para una convocatoria.
+    Calcula el rendimiento acumulado de las pruebas corregidas del
+    tipo indicado que siguen existiendo para una convocatoria.
 
-    Solo incluye pruebas de tipo SIMULACRO. Un simulacro se considera
-    corregido cuando alguna de sus preguntas tiene respuesta o nivel de
-    seguridad guardado. El resultado se recalcula siempre desde
-    usuario.sqlite3, por lo que una eliminación queda reflejada de forma
-    automática.
+    Una prueba se considera corregida cuando alguna de sus preguntas
+    tiene respuesta o nivel de seguridad guardado. El resultado se recalcula siempre desde Turso,
+    por lo que cualquier modificación o eliminación queda reflejada
+    automáticamente.
     """
+
+    tipo = str(tipo_prueba).strip().upper()
+
+    if tipo not in {"SIMULACRO", "TEST"}:
+        raise ValueError(
+            "El tipo de prueba acumulada no es válido."
+        )
 
     respuestas_validas = {"A", "B", "C", "D"}
     etiquetas_seguridad = {
@@ -1761,7 +2174,7 @@ def obtener_resultado_acumulado_convocatoria(
                 s.valoracion_test_no_contesta
             FROM simulacros s
             WHERE s.convocatoria_id = ?
-              AND s.tipo_prueba = 'SIMULACRO'
+              AND s.tipo_prueba = ?
               AND EXISTS (
                     SELECT 1
                     FROM simulacro_preguntas sp
@@ -1773,7 +2186,10 @@ def obtener_resultado_acumulado_convocatoria(
               )
             ORDER BY s.id
             """,
-            (convocatoria_id,),
+            (
+                convocatoria_id,
+                tipo,
+            ),
         ).fetchall()
 
         if not simulacros:
@@ -1787,12 +2203,19 @@ def obtener_resultado_acumulado_convocatoria(
                 "aciertos": 0,
                 "fallos": 0,
                 "temas": [],
+                "normas": [],
                 "seguridad": [],
                 "firma_datos": hashlib.sha256(b"").hexdigest(),
             }
 
-        simulacros_ids = [int(fila["id"]) for fila in simulacros]
-        marcadores = ", ".join("?" for _ in simulacros_ids)
+        simulacros_ids = [
+            int(fila["id"])
+            for fila in simulacros
+        ]
+        marcadores = ", ".join(
+            "?"
+            for _ in simulacros_ids
+        )
 
         preguntas = con.execute(
             f"""
@@ -1803,6 +2226,9 @@ def obtener_resultado_acumulado_convocatoria(
                 sp.respuesta_usuario,
                 sp.seguridad_usuario,
                 ss.respuesta_correcta,
+                ss.tipo_clasificacion,
+                ss.nombre_norma,
+                ss.nombre_norma_normalizado,
                 ss.temas_json
             FROM simulacros s
             JOIN simulacro_preguntas sp
@@ -1819,7 +2245,9 @@ def obtener_resultado_acumulado_convocatoria(
     aciertos = 0
     fallos = 0
     no_contestadas = 0
+
     estadisticas_temas: dict[str, dict] = {}
+    estadisticas_normas: dict[str, dict] = {}
 
     estadisticas_seguridad = {
         codigo: {
@@ -1866,7 +2294,9 @@ def obtener_resultado_acumulado_convocatoria(
             )
 
         try:
-            tema = json.loads(pregunta["temas_json"])
+            tema = json.loads(
+                pregunta["temas_json"]
+            )
         except (TypeError, json.JSONDecodeError) as exc:
             raise ValueError(
                 "Los simulacros acumulados contienen un tema congelado "
@@ -1899,8 +2329,44 @@ def obtener_resultado_acumulado_convocatoria(
                 "fallos_muy_seguro": 0,
             }
 
-        estadistica_tema = estadisticas_temas[clave_tema]
+        estadistica_tema = estadisticas_temas[
+            clave_tema
+        ]
         estadistica_tema["preguntas"] += 1
+
+        tipo_clasificacion = str(
+            pregunta["tipo_clasificacion"] or ""
+        ).strip().upper()
+
+        if tipo_clasificacion == "INFORMATICA":
+            nombre_norma = "Informática"
+        else:
+            nombre_norma = str(
+                pregunta["nombre_norma_normalizado"]
+                or pregunta["nombre_norma"]
+                or "Sin norma identificada"
+            ).strip()
+
+            if not nombre_norma:
+                nombre_norma = "Sin norma identificada"
+
+        clave_norma = nombre_norma.casefold()
+
+        if clave_norma not in estadisticas_normas:
+            estadisticas_normas[clave_norma] = {
+                "norma": nombre_norma,
+                "preguntas": 0,
+                "contestadas": 0,
+                "no_contestadas": 0,
+                "aciertos": 0,
+                "fallos": 0,
+                "fallos_muy_seguro": 0,
+            }
+
+        estadistica_norma = estadisticas_normas[
+            clave_norma
+        ]
+        estadistica_norma["preguntas"] += 1
 
         firma_partes.append(
             "|".join(
@@ -1911,6 +2377,7 @@ def obtener_resultado_acumulado_convocatoria(
                     str(seguridad_usuario),
                     str(respuesta_correcta),
                     clave_tema,
+                    clave_norma,
                 ]
             )
         )
@@ -1918,11 +2385,13 @@ def obtener_resultado_acumulado_convocatoria(
         if respuesta_usuario is None:
             no_contestadas += 1
             estadistica_tema["no_contestadas"] += 1
+            estadistica_norma["no_contestadas"] += 1
             continue
 
         if respuesta_usuario not in respuestas_validas:
             raise ValueError(
-                "Existe alguna respuesta acumulada del usuario no válida."
+                "Existe alguna respuesta acumulada del usuario "
+                "no válida."
             )
 
         if seguridad_usuario not in estadisticas_seguridad:
@@ -1932,28 +2401,41 @@ def obtener_resultado_acumulado_convocatoria(
             )
 
         estadistica_tema["contestadas"] += 1
-        estadistica_seguridad = estadisticas_seguridad[seguridad_usuario]
+        estadistica_norma["contestadas"] += 1
+
+        estadistica_seguridad = (
+            estadisticas_seguridad[seguridad_usuario]
+        )
         estadistica_seguridad["contestadas"] += 1
 
         if respuesta_usuario == respuesta_correcta:
             aciertos += 1
             estadistica_tema["aciertos"] += 1
+            estadistica_norma["aciertos"] += 1
             estadistica_seguridad["aciertos"] += 1
         else:
             fallos += 1
             estadistica_tema["fallos"] += 1
+            estadistica_norma["fallos"] += 1
             estadistica_seguridad["fallos"] += 1
 
             if seguridad_usuario == "MUY_SEGURO":
                 estadistica_tema["fallos_muy_seguro"] += 1
+                estadistica_norma["fallos_muy_seguro"] += 1
 
     contestadas = aciertos + fallos
+
     resultado_temas = []
 
     for estadistica in estadisticas_temas.values():
         preguntas_tema = estadistica["preguntas"]
         contestadas_tema = estadistica["contestadas"]
 
+        estadistica["porcentaje_convocatoria"] = (
+            preguntas_tema / total * 100
+            if total
+            else 0.0
+        )
         estadistica["porcentaje_aciertos"] = (
             estadistica["aciertos"] / preguntas_tema * 100
             if preguntas_tema
@@ -1979,9 +2461,51 @@ def obtener_resultado_acumulado_convocatoria(
 
     resultado_temas.sort(
         key=lambda item: (
+            -item["porcentaje_convocatoria"],
             item["parte"],
             item["numero_tema"],
             item["titulo"],
+        )
+    )
+
+    resultado_normas = []
+
+    for estadistica in estadisticas_normas.values():
+        preguntas_norma = estadistica["preguntas"]
+        contestadas_norma = estadistica["contestadas"]
+
+        estadistica["porcentaje_convocatoria"] = (
+            preguntas_norma / total * 100
+            if total
+            else 0.0
+        )
+        estadistica["porcentaje_aciertos"] = (
+            estadistica["aciertos"] / preguntas_norma * 100
+            if preguntas_norma
+            else 0.0
+        )
+        estadistica["porcentaje_fallos"] = (
+            estadistica["fallos"] / preguntas_norma * 100
+            if preguntas_norma
+            else 0.0
+        )
+        estadistica["porcentaje_no_contestadas"] = (
+            estadistica["no_contestadas"] / preguntas_norma * 100
+            if preguntas_norma
+            else 0.0
+        )
+        estadistica["porcentaje_aciertos_contestadas"] = (
+            estadistica["aciertos"] / contestadas_norma * 100
+            if contestadas_norma
+            else 0.0
+        )
+
+        resultado_normas.append(estadistica)
+
+    resultado_normas.sort(
+        key=lambda item: (
+            -item["porcentaje_convocatoria"],
+            item["norma"].casefold(),
         )
     )
 
@@ -1989,16 +2513,22 @@ def obtener_resultado_acumulado_convocatoria(
 
     for estadistica in estadisticas_seguridad.values():
         contestadas_seguridad = estadistica["contestadas"]
+
         estadistica["porcentaje_aciertos"] = (
-            estadistica["aciertos"] / contestadas_seguridad * 100
+            estadistica["aciertos"]
+            / contestadas_seguridad
+            * 100
             if contestadas_seguridad
             else 0.0
         )
         estadistica["porcentaje_fallos"] = (
-            estadistica["fallos"] / contestadas_seguridad * 100
+            estadistica["fallos"]
+            / contestadas_seguridad
+            * 100
             if contestadas_seguridad
             else 0.0
         )
+
         resultado_seguridad.append(estadistica)
 
     firma_datos = hashlib.sha256(
@@ -2015,6 +2545,7 @@ def obtener_resultado_acumulado_convocatoria(
         "aciertos": aciertos,
         "fallos": fallos,
         "temas": resultado_temas,
+        "normas": resultado_normas,
         "seguridad": resultado_seguridad,
         "firma_datos": firma_datos,
     }
