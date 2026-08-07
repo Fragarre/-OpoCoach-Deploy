@@ -165,6 +165,16 @@ def generar_pdf_simulacro(
         spaceAfter=2 * mm,
     )
 
+    estilo_origen_ia = ParagraphStyle(
+        "OrigenIA",
+        parent=estilos["Normal"],
+        fontName="Helvetica-Bold",
+        fontSize=8.5,
+        leading=11,
+        alignment=TA_LEFT,
+        spaceAfter=1.5 * mm,
+    )
+
     estilo_opcion = ParagraphStyle(
         "Opcion",
         parent=estilos["Normal"],
@@ -244,6 +254,15 @@ def generar_pdf_simulacro(
                 estilo_pregunta,
             )
         )
+
+        tipo_fuente = str(pregunta.get("tipo_fuente", "") if hasattr(pregunta, "get") else pregunta["tipo_fuente"] or "").strip().lower()
+        if tipo_fuente == "ia_generada":
+            bloque.append(
+                Paragraph(
+                    "<b>Origen: pregunta generada por IA</b>",
+                    estilo_origen_ia,
+                )
+            )
 
         opciones = [
             ("A", pregunta["opcion_a"]),

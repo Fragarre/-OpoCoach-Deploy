@@ -20,6 +20,7 @@ import hashlib
 import json
 import random
 import sqlite3
+from datetime import datetime, timedelta
 
 from lib.database import conectar, conectar_usuario
 
@@ -138,7 +139,7 @@ def obtener_simulacros(
                 END AS corregido
             FROM simulacros s
             WHERE s.convocatoria_id = ?
-              AND s.tipo_prueba = ?
+              AND s.tipo_prueba = 'SIMULACRO'
             ORDER BY s.numero DESC
             """,
             (convocatoria_id,),
@@ -148,6 +149,7 @@ def obtener_simulacros(
 def obtener_disponibilidad_simulacro(
     convocatoria_id: int,
     origenes_seleccionados: list[str],
+    fuentes_seleccionadas: list[str] | None = None,
 ) -> list[sqlite3.Row]:
     """
     Cuenta las preguntas disponibles por cada parte configurada
@@ -177,6 +179,17 @@ def obtener_disponibilidad_simulacro(
 
     marcadores_origen = ", ".join("?" for _ in origenes)
 
+    fuentes = {str(x).strip().upper() for x in (fuentes_seleccionadas or ["REAL", "IA"]) if str(x).strip()}
+    if not fuentes or fuentes - {"REAL", "IA"}:
+        raise ValueError("Debe seleccionar al menos una fuente válida: REAL y/o IA.")
+    condicion_fuente = (
+        "LOWER(TRIM(lp.tipo_fuente)) = 'ia_generada'"
+        if fuentes == {"IA"}
+        else "LOWER(TRIM(lp.tipo_fuente)) <> 'ia_generada'"
+        if fuentes == {"REAL"}
+        else "1 = 1"
+    )
+
     with conectar() as con:
         return con.execute(
             f"""
@@ -201,6 +214,7 @@ def obtener_disponibilidad_simulacro(
                     OR UPPER(TRIM(lp.origen_oposicion))
                         IN ({marcadores_origen})
                )
+               AND ({condicion_fuente})
 
             WHERE cp.convocatoria_id = ?
 
@@ -432,9 +446,165 @@ def _guardar_preguntas_prueba_en_lotes(
             )
 
 
+
+DIAS_SIN_REPETICION = 3
+
+
+def _convertir_fecha_turso(
+    valor,
+) -> datetime | None:
+    """Convierte la fecha textual guardada en Turso a datetime."""
+
+    if valor is None:
+        return None
+
+    texto = str(valor).strip()
+
+    if not texto:
+        return None
+
+    if texto.endswith("Z"):
+        texto = texto[:-1] + "+00:00"
+
+    try:
+        fecha = datetime.fromisoformat(texto)
+    except ValueError:
+        return None
+
+    if fecha.tzinfo is not None:
+        fecha = fecha.astimezone().replace(tzinfo=None)
+
+    return fecha
+
+
+def _obtener_ultima_aparicion_preguntas(
+    convocatoria_id: int,
+) -> dict[int, datetime]:
+    """
+    Obtiene desde Turso la última fecha en que apareció cada pregunta
+    en cualquier simulacro o test conservado de la convocatoria.
+    """
+
+    with conectar_usuario() as con:
+        filas = con.execute(
+            """
+            SELECT
+                sp.pregunta_id,
+                MAX(s.fecha_generacion) AS ultima_fecha
+            FROM simulacros s
+            JOIN simulacro_preguntas sp
+                ON sp.simulacro_id = s.id
+            WHERE s.convocatoria_id = ?
+              AND sp.pregunta_id IS NOT NULL
+            GROUP BY sp.pregunta_id
+            """,
+            (convocatoria_id,),
+        ).fetchall()
+
+    resultado: dict[int, datetime] = {}
+
+    for fila in filas:
+        fecha = _convertir_fecha_turso(
+            fila["ultima_fecha"]
+        )
+
+        if fecha is not None:
+            resultado[int(fila["pregunta_id"])] = fecha
+
+    return resultado
+
+
+def _es_pregunta_reciente(
+    pregunta_id: int,
+    ultima_aparicion: dict[int, datetime],
+    fecha_limite: datetime,
+) -> bool:
+    """Indica si la pregunta apareció dentro del periodo protegido."""
+
+    fecha = ultima_aparicion.get(
+        int(pregunta_id)
+    )
+
+    return (
+        fecha is not None
+        and fecha > fecha_limite
+    )
+
+
+def _seleccionar_sin_repeticion_reciente(
+    candidatas: list,
+    cantidad: int,
+    ultima_aparicion: dict[int, datetime],
+) -> tuple[list, int]:
+    """
+    Selecciona primero preguntas no usadas en los últimos tres días.
+
+    Si no bastan, completa con preguntas recientes empezando por las que
+    llevan más tiempo sin aparecer.
+
+    Devuelve:
+        - preguntas elegidas;
+        - número de preguntas recientes reutilizadas.
+    """
+
+    if cantidad <= 0:
+        return [], 0
+
+    fecha_limite = (
+        datetime.now()
+        - timedelta(days=DIAS_SIN_REPETICION)
+    )
+
+    no_recientes = []
+    recientes = []
+
+    for pregunta in candidatas:
+        pregunta_id = int(
+            pregunta["pregunta_id"]
+        )
+        fecha = ultima_aparicion.get(
+            pregunta_id
+        )
+
+        if (
+            fecha is None
+            or fecha <= fecha_limite
+        ):
+            no_recientes.append(pregunta)
+        else:
+            recientes.append(pregunta)
+
+    if len(no_recientes) >= cantidad:
+        return (
+            random.sample(
+                no_recientes,
+                cantidad,
+            ),
+            0,
+        )
+
+    random.shuffle(no_recientes)
+    elegidas = list(no_recientes)
+
+    # El shuffle previo evita un sesgo fijo entre preguntas con la misma fecha.
+    random.shuffle(recientes)
+    recientes.sort(
+        key=lambda pregunta: ultima_aparicion[
+            int(pregunta["pregunta_id"])
+        ]
+    )
+
+    faltan = cantidad - len(elegidas)
+    reutilizadas = recientes[:faltan]
+    elegidas.extend(reutilizadas)
+
+    return elegidas, len(reutilizadas)
+
+
 def crear_simulacro(
     convocatoria_id: int,
     origenes_seleccionados: list[str],
+    fuentes_seleccionadas: list[str] | None = None,
 ) -> int:
     """
     Genera un simulacro completo.
@@ -465,6 +635,17 @@ def crear_simulacro(
         )
 
     marcadores_origen = ", ".join("?" for _ in origenes)
+
+    fuentes = {str(x).strip().upper() for x in (fuentes_seleccionadas or ["REAL", "IA"]) if str(x).strip()}
+    if not fuentes or fuentes - {"REAL", "IA"}:
+        raise ValueError("Debe seleccionar al menos una fuente válida: REAL y/o IA.")
+    condicion_fuente = (
+        "LOWER(TRIM(lp.tipo_fuente)) = 'ia_generada'"
+        if fuentes == {"IA"}
+        else "LOWER(TRIM(lp.tipo_fuente)) <> 'ia_generada'"
+        if fuentes == {"REAL"}
+        else "1 = 1"
+    )
 
     # -------------------------------------------------------------------------
     # 1. Lectura de los datos maestros
@@ -591,6 +772,7 @@ def crear_simulacro(
                     OR UPPER(TRIM(lp.origen_oposicion))
                         IN ({marcadores_origen})
               )
+              AND ({condicion_fuente})
             """,
             (
                 convocatoria_id,
@@ -607,6 +789,10 @@ def crear_simulacro(
     ] = []
 
     preguntas_usadas: set[int] = set()
+
+    ultima_aparicion = _obtener_ultima_aparicion_preguntas(
+        convocatoria_id
+    )
 
     for parte in partes:
 
@@ -627,9 +813,10 @@ def crear_simulacro(
                 f'{len(candidatas_parte)}.'
             )
 
-        elegidas = random.sample(
-            candidatas_parte,
-            cantidad,
+        elegidas, _ = _seleccionar_sin_repeticion_reciente(
+            candidatas=candidatas_parte,
+            cantidad=cantidad,
+            ultima_aparicion=ultima_aparicion,
         )
 
         for pregunta in elegidas:
@@ -1862,6 +2049,11 @@ def crear_test(
 
     preguntas_seleccionadas: list[sqlite3.Row] = []
     preguntas_usadas: set[int] = set()
+    reutilizadas_recientes = 0
+
+    ultima_aparicion = _obtener_ultima_aparicion_preguntas(
+        convocatoria_id
+    )
 
     for elemento in elementos:
         clave = str(elemento["elemento_id"])
@@ -1880,10 +2072,16 @@ def crear_test(
             len(disponibles_elemento),
         )
 
-        elegidas = random.sample(
-            disponibles_elemento,
-            cantidad_real,
+        (
+            elegidas,
+            reutilizadas_elemento,
+        ) = _seleccionar_sin_repeticion_reciente(
+            candidatas=disponibles_elemento,
+            cantidad=cantidad_real,
+            ultima_aparicion=ultima_aparicion,
         )
+
+        reutilizadas_recientes += reutilizadas_elemento
 
         for pregunta in elegidas:
             preguntas_usadas.add(
@@ -1912,9 +2110,20 @@ def crear_test(
         ) - len(preguntas_seleccionadas)
 
         if faltan > 0:
-            adicionales = random.sample(
-                restantes,
-                min(faltan, len(restantes)),
+            (
+                adicionales,
+                reutilizadas_adicionales,
+            ) = _seleccionar_sin_repeticion_reciente(
+                candidatas=restantes,
+                cantidad=min(
+                    faltan,
+                    len(restantes),
+                ),
+                ultima_aparicion=ultima_aparicion,
+            )
+
+            reutilizadas_recientes += (
+                reutilizadas_adicionales
             )
 
             for pregunta in adicionales:
@@ -1943,6 +2152,14 @@ def crear_test(
             f"solo hay {total_generado} preguntas distintas "
             "disponibles para la selección realizada. El test se ha "
             "creado con el máximo disponible."
+        )
+
+    if reutilizadas_recientes > 0:
+        avisos.append(
+            f"No había suficientes preguntas sin utilizar durante "
+            f"los últimos {DIAS_SIN_REPETICION} días. Se han "
+            f"reutilizado {reutilizadas_recientes}, seleccionando "
+            "preferentemente las que llevaban más tiempo sin aparecer."
         )
 
     with conectar_usuario() as con_usuario:

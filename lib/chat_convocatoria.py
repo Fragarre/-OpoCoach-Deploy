@@ -41,7 +41,7 @@ from lib.database import conectar
 from tools.openai_api import seleccionar_fragmento
 
 
-MODELO_PREDETERMINADO = "gpt-5.4-mini"
+MODELO_PREDETERMINADO = "gpt-5.4-nano"
 OPERACION_IA = "chat_convocatoria"
 OPERACION_IA_GENERAL = "chat_conocimiento_general"
 

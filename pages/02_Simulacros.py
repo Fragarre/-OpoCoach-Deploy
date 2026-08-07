@@ -87,12 +87,24 @@ st.subheader(
 )
 
 ORIGENES_DISPONIBLES = ["A1", "A2", "C1", "C2"]
+FUENTES_DISPONIBLES = {
+    "Preguntas reales/importadas": "REAL",
+    "Preguntas generadas por IA": "IA",
+}
 CLAVE_ORIGENES = f"origenes_simulacro_{convocatoria_id}"
+CLAVE_FUENTES = f"fuentes_simulacro_{convocatoria_id}"
 
 if CLAVE_ORIGENES not in st.session_state:
     st.session_state[CLAVE_ORIGENES] = ORIGENES_DISPONIBLES.copy()
 
+# Se seleccionan ambas fuentes por defecto para preservar exactamente el
+# comportamiento anterior, que no filtraba por tipo_fuente.
+if CLAVE_FUENTES not in st.session_state:
+    st.session_state[CLAVE_FUENTES] = list(FUENTES_DISPONIBLES.keys())
+
 origenes_seleccionados = st.session_state[CLAVE_ORIGENES]
+fuentes_etiquetas = st.session_state[CLAVE_FUENTES]
+fuentes_seleccionadas = [FUENTES_DISPONIBLES[x] for x in fuentes_etiquetas]
 
 if len(origenes_seleccionados) == len(ORIGENES_DISPONIBLES):
     etiqueta_origen = "Origen: Todos"
@@ -103,8 +115,19 @@ else:
         f"Origen: {len(origenes_seleccionados)} seleccionados"
     )
 
-columna_origen, columna_crear, columna_progreso = st.columns(
-    [1.2, 1.5, 2.3],
+if len(fuentes_etiquetas) == len(FUENTES_DISPONIBLES):
+    etiqueta_fuente = "Fuente: Todas"
+elif len(fuentes_etiquetas) == 1:
+    etiqueta_fuente = (
+        "Fuente: IA"
+        if fuentes_etiquetas[0] == "Preguntas generadas por IA"
+        else "Fuente: Real/importada"
+    )
+else:
+    etiqueta_fuente = "Fuente: ninguna"
+
+columna_origen, columna_fuente, columna_crear, columna_progreso = st.columns(
+    [1.1, 1.25, 1.5, 2.15],
     vertical_alignment="center",
 )
 
@@ -113,7 +136,7 @@ with columna_origen.popover(
     use_container_width=True,
 ):
     st.multiselect(
-        "Procedencia de las preguntas",
+        "Nivel/origen de las preguntas",
         options=ORIGENES_DISPONIBLES,
         key=CLAVE_ORIGENES,
         help=(
@@ -122,11 +145,27 @@ with columna_origen.popover(
         ),
     )
 
+with columna_fuente.popover(
+    etiqueta_fuente,
+    use_container_width=True,
+):
+    st.multiselect(
+        "Fuente de las preguntas",
+        options=list(FUENTES_DISPONIBLES.keys()),
+        key=CLAVE_FUENTES,
+        help=(
+            "Permite incluir o excluir las preguntas generadas por IA. "
+            "La selección de fuente es independiente del nivel/origen A1/A2/C1/C2."
+        ),
+    )
+
 sin_origen_seleccionado = not origenes_seleccionados
+sin_fuente_seleccionada = not fuentes_seleccionadas
 
 disponibilidad = obtener_disponibilidad_simulacro(
     convocatoria_id=convocatoria_id,
     origenes_seleccionados=origenes_seleccionados,
+    fuentes_seleccionadas=fuentes_seleccionadas,
 )
 
 total_disponibles = sum(
@@ -142,13 +181,13 @@ contenedor_progreso.metric(
 )
 
 if columna_crear.button(
-    "Crear simulacro de prueba",
+    "Crear simulacro",
     type="primary",
     use_container_width=True,
-    disabled=sin_origen_seleccionado,
+    disabled=(sin_origen_seleccionado or sin_fuente_seleccionada),
     help=(
-        "Seleccione al menos un origen."
-        if sin_origen_seleccionado
+        "Seleccione al menos un origen y una fuente."
+        if (sin_origen_seleccionado or sin_fuente_seleccionada)
         else None
     ),
 ):
@@ -156,6 +195,7 @@ if columna_crear.button(
         simulacro_id = crear_simulacro(
             convocatoria_id=convocatoria_id,
             origenes_seleccionados=origenes_seleccionados,
+            fuentes_seleccionadas=fuentes_seleccionadas,
         )
     except ValueError as exc:
         st.error(str(exc))

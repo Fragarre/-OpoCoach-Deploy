@@ -41,7 +41,7 @@ from tools.openai_api import seleccionar_fragmento_json
 
 TAMANO_LOTE = 16
 MAX_TRABAJADORES_IA = 3
-MODELO_PREDETERMINADO = "gpt-5.4-mini"
+MODELO_PREDETERMINADO = "gpt-5.4-nano"
 OPERACION_IA = "comentarios_pdf_soluciones"
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -54,8 +54,9 @@ Eres preparador de oposiciones.
 La respuesta correcta de cada pregunta ya está determinada. No debes resolver
 la pregunta de nuevo ni cuestionar la respuesta indicada.
 
-Recibirás preguntas de dos tipos: JURIDICA e INFORMATICA. Redacta un comentario
-claro que explique por qué la opción indicada es correcta.
+Recibirás preguntas JURIDICAS y NO JURIDICAS. Las no jurídicas suelen ser
+de INFORMATICA. Redacta un comentario claro que explique por qué la opción
+indicada es correcta.
 
 REGLAS PARA PREGUNTAS JURIDICAS:
 - Utiliza exclusivamente la norma, el artículo y el texto de la fuente aportada.
@@ -69,7 +70,7 @@ REGLAS PARA PREGUNTAS JURIDICAS:
   encajan con la regla del artículo, sin analizarlas una por una.
 - No uses conocimiento jurídico externo ni completes información ausente.
 
-REGLAS PARA PREGUNTAS INFORMATICAS:
+REGLAS PARA PREGUNTAS NO JURIDICAS, INCLUIDAS LAS INFORMATICAS:
 - Utiliza el enunciado, las opciones y la respuesta correcta proporcionada.
 - Explica el concepto, función, comando, herramienta o comportamiento técnico
   que hace correcta esa opción.
@@ -116,24 +117,37 @@ def _limpiar_texto(valor: Any | None) -> str:
 
 def _normalizar_articulo(valor: Any | None) -> str:
     """
-    Normaliza una referencia de artículo para poder comparar formatos como:
+    Extrae la referencia numérica principal del artículo.
+
+    Tolera formatos como:
         53
         Artículo 53
         art. 53
         53.1
+        artículo 101.2
+        Artículo 13 de Título 1
+        Artículo 30. Cómputo de plazos
+        Artículo 117 de Libro 2
+
+    Se conserva la numeración completa del artículo y sus apartados
+    (por ejemplo, 101.2 o 35.1), ignorando títulos, libros y descripciones.
     """
     texto = _limpiar_texto(valor).lower()
 
     if not texto:
         return ""
 
-    texto = texto.replace("artículo", "")
-    texto = texto.replace("articulo", "")
-    texto = re.sub(r"\bart\.?\b", "", texto)
-    texto = re.sub(r"\s+", "", texto)
-    texto = texto.rstrip(".")
+    texto = texto.replace(",", ".")
 
-    return texto
+    coincidencia = re.search(
+        r"\b\d+(?:\.\d+)*\b",
+        texto,
+    )
+
+    if coincidencia is None:
+        return ""
+
+    return coincidencia.group(0)
 
 
 def _dividir_lotes(
@@ -166,6 +180,7 @@ def _obtener_preguntas_pendientes(
                 ss.respuesta_correcta,
 
                 ss.tipo_clasificacion,
+                ss.tema_no_juridico,
                 ss.nombre_norma,
                 ss.articulo,
                 ss.norma_id_normalizada,
@@ -243,9 +258,14 @@ def _obtener_texto_articulo(
 
 def _preparar_preguntas(
     preguntas: list[dict[str, Any]],
-) -> tuple[list[dict[str, Any]], list[int]]:
+) -> tuple[
+    list[dict[str, Any]],
+    list[int],
+    list[dict[str, Any]],
+]:
     preparadas: list[dict[str, Any]] = []
     sin_fuente: list[int] = []
+    detalle_sin_fuente: list[dict[str, Any]] = []
 
     for pregunta in preguntas:
         orden = int(pregunta["orden"])
@@ -253,10 +273,10 @@ def _preparar_preguntas(
             pregunta.get("tipo_clasificacion")
         ).upper()
 
-        es_informatica = tipo_clasificacion == "INFORMATICA"
+        es_juridica = tipo_clasificacion == "JURIDICA"
         texto_fuente: str | None = None
 
-        if not es_informatica:
+        if es_juridica:
             texto_fuente = _obtener_texto_articulo(
                 pregunta.get("norma_id_normalizada"),
                 pregunta.get("articulo_normalizado"),
@@ -264,6 +284,30 @@ def _preparar_preguntas(
 
             if not texto_fuente:
                 sin_fuente.append(orden)
+                detalle_sin_fuente.append(
+                    {
+                        "orden": orden,
+                        "tipo_clasificacion": tipo_clasificacion,
+                        "tema_no_juridico": _limpiar_texto(
+                            pregunta.get("tema_no_juridico")
+                        ),
+                        "nombre_norma": _limpiar_texto(
+                            pregunta.get("nombre_norma")
+                        ),
+                        "norma_id_normalizada": pregunta.get(
+                            "norma_id_normalizada"
+                        ),
+                        "articulo": _limpiar_texto(
+                            pregunta.get("articulo")
+                        ),
+                        "articulo_normalizado": _limpiar_texto(
+                            pregunta.get("articulo_normalizado")
+                        ),
+                        "enunciado": _limpiar_texto(
+                            pregunta.get("enunciado")
+                        ),
+                    }
+                )
                 continue
 
         preparadas.append(
@@ -273,7 +317,12 @@ def _preparar_preguntas(
                 ),
                 "orden": orden,
                 "tipo_clasificacion": (
-                    "INFORMATICA" if es_informatica else "JURIDICA"
+                    "JURIDICA"
+                    if es_juridica
+                    else (
+                        tipo_clasificacion
+                        or "NO_JURIDICA"
+                    )
                 ),
                 "enunciado": _limpiar_texto(
                     pregunta.get("enunciado")
@@ -288,20 +337,24 @@ def _preparar_preguntas(
                     pregunta.get("respuesta_correcta")
                 ).upper(),
                 "norma": (
-                    "" if es_informatica else _limpiar_texto(
+                    _limpiar_texto(
                         pregunta.get("nombre_norma")
                     )
+                    if es_juridica
+                    else ""
                 ),
                 "articulo": (
-                    "" if es_informatica else _limpiar_texto(
+                    _limpiar_texto(
                         pregunta.get("articulo")
                     )
+                    if es_juridica
+                    else ""
                 ),
                 "texto_fuente": texto_fuente or "",
             }
         )
 
-    return preparadas, sin_fuente
+    return preparadas, sin_fuente, detalle_sin_fuente
 
 
 def _crear_prompt(lote: list[dict[str, Any]]) -> str:
@@ -611,6 +664,7 @@ def generar_comentarios_soluciones(
         "pendientes_iniciales": 0,
         "con_fuente": 0,
         "sin_fuente": [],
+        "detalle_sin_fuente": [],
         "actualizadas": 0,
         "errores": [],
         "lotes_procesados": 0,
@@ -639,7 +693,11 @@ def generar_comentarios_soluciones(
         tiempo_lectura_turso += time.perf_counter() - inicio
 
         inicio = time.perf_counter()
-        preparadas, sin_fuente = _preparar_preguntas(
+        (
+            preparadas,
+            sin_fuente,
+            detalle_sin_fuente,
+        ) = _preparar_preguntas(
             pendientes
         )
         tiempo_preparacion += time.perf_counter() - inicio
@@ -649,6 +707,7 @@ def generar_comentarios_soluciones(
                 "pendientes_iniciales": len(pendientes),
                 "con_fuente": len(preparadas),
                 "sin_fuente": sin_fuente,
+                "detalle_sin_fuente": detalle_sin_fuente,
             }
         )
 
@@ -785,6 +844,44 @@ def generar_comentarios_soluciones(
             f" | llamadas_ia={llamadas_ia}"
             f" | intentos_fallidos={intentos_fallidos}"
             f" | tamano_lote={tamano_lote}"
-            f" | trabajadores_ia={max_trabajadores_ia}",
+            f" | trabajadores_ia={max_trabajadores_ia}"
+            f" | pendientes={resumen['pendientes_iniciales']}"
+            f" | preparadas={resumen['con_fuente']}"
+            f" | sin_fuente_juridica={len(resumen['sin_fuente'])}"
+            f" | actualizadas={resumen['actualizadas']}"
+            f" | lotes_error={len(resumen['errores'])}",
             flush=True,
         )
+
+        if resumen["sin_fuente"]:
+            print(
+                "PREGUNTAS JURIDICAS SIN FUENTE PARA COMENTARIO: "
+                + ", ".join(
+                    str(orden)
+                    for orden in resumen["sin_fuente"]
+                ),
+                flush=True,
+            )
+
+            for detalle in resumen["detalle_sin_fuente"]:
+                print(
+                    "DIAGNOSTICO SIN FUENTE"
+                    f" | orden={detalle['orden']}"
+                    f" | tipo_clasificacion={detalle['tipo_clasificacion']!r}"
+                    f" | tema_no_juridico={detalle['tema_no_juridico']!r}"
+                    f" | nombre_norma={detalle['nombre_norma']!r}"
+                    f" | norma_id_normalizada={detalle['norma_id_normalizada']!r}"
+                    f" | articulo={detalle['articulo']!r}"
+                    f" | articulo_normalizado={detalle['articulo_normalizado']!r}"
+                    f" | enunciado={detalle['enunciado']!r}",
+                    flush=True,
+                )
+
+        if resumen["errores"]:
+            for error_lote in resumen["errores"]:
+                print(
+                    "ERROR COMENTARIOS LOTE "
+                    f'{error_lote["lote"]}: '
+                    f'{error_lote["error"]}',
+                    flush=True,
+                )

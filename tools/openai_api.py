@@ -68,6 +68,11 @@ PRECIOS = {
         "input": 0.75,
         "output": 4.50,
     },
+        "gpt-5.4-nano": {
+            "input": 0.20,
+            "cached_input": 0.02,
+            "output": 1.25,
+    },
 }
 
 
@@ -132,7 +137,7 @@ def registrar_coste(
 
 def llamar_responses(
     input_api,
-    modelo="gpt-5.4-mini",
+    modelo="gpt-5.4-nano",
     operacion="general",
 ):
 
@@ -204,7 +209,7 @@ def llamar_responses(
 
 def seleccionar_fragmento(
     prompt,
-    modelo="gpt-5.4-mini",
+    modelo="gpt-5.4-nano",
     operacion="general",
 ):
 
@@ -219,7 +224,7 @@ def seleccionar_fragmento(
 
 def seleccionar_fragmento_json(
     prompt,
-    modelo="gpt-5.4-mini",
+    modelo="gpt-5.4-nano",
     operacion="general",
 ):
     """
@@ -257,7 +262,7 @@ def seleccionar_fragmento_json(
 
 def generar_explicacion_ia(
     prompt,
-    modelo="gpt-5.4-mini",
+    modelo="gpt-5.4-nano",
 ):
 
     return seleccionar_fragmento_json(
