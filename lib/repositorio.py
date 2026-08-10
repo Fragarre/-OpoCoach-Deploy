@@ -1416,12 +1416,32 @@ def eliminar_simulacro(
 
 def obtener_puntos_temario_test(
     convocatoria_id: int,
+    fuentes_seleccionadas: list[str] | None = None,
 ) -> list[sqlite3.Row]:
     """Obtiene los puntos del temario y su disponibilidad para tests."""
 
+    fuentes = {
+        str(x).strip().upper()
+        for x in (fuentes_seleccionadas or ["REAL", "IA"])
+        if str(x).strip()
+    }
+
+    if not fuentes or fuentes - {"REAL", "IA"}:
+        raise ValueError(
+            "Debe seleccionar al menos una fuente válida: REAL y/o IA."
+        )
+
+    condicion_fuente = (
+        "LOWER(TRIM(lp.tipo_fuente)) = 'ia_generada'"
+        if fuentes == {"IA"}
+        else "LOWER(TRIM(lp.tipo_fuente)) <> 'ia_generada'"
+        if fuentes == {"REAL"}
+        else "1 = 1"
+    )
+
     with conectar() as con:
         return con.execute(
-            """
+            f"""
             SELECT
                 tt.id,
                 tt.parte,
@@ -1446,6 +1466,7 @@ def obtener_puntos_temario_test(
 
             LEFT JOIN lote_preguntas lp
                 ON lp.id = bp.pregunta_id
+               AND {condicion_fuente}
 
             WHERE t.convocatoria_id = ?
 
@@ -1475,6 +1496,7 @@ def obtener_puntos_temario_test(
 
 def obtener_normas_test(
     convocatoria_id: int,
+    fuentes_seleccionadas: list[str] | None = None,
 ) -> list[sqlite3.Row]:
     """
     Obtiene las leyes o normas con preguntas disponibles para crear tests.
@@ -1486,9 +1508,28 @@ def obtener_normas_test(
     El nombre mostrado se toma de normas.nombre_canonico cuando hay ID.
     """
 
+    fuentes = {
+        str(x).strip().upper()
+        for x in (fuentes_seleccionadas or ["REAL", "IA"])
+        if str(x).strip()
+    }
+
+    if not fuentes or fuentes - {"REAL", "IA"}:
+        raise ValueError(
+            "Debe seleccionar al menos una fuente válida: REAL y/o IA."
+        )
+
+    condicion_fuente = (
+        "LOWER(TRIM(lp.tipo_fuente)) = 'ia_generada'"
+        if fuentes == {"IA"}
+        else "LOWER(TRIM(lp.tipo_fuente)) <> 'ia_generada'"
+        if fuentes == {"REAL"}
+        else "1 = 1"
+    )
+
     with conectar() as con:
         return con.execute(
-            """
+            f"""
             SELECT
                 CASE
                     WHEN lp.norma_id_normalizada IS NOT NULL
@@ -1541,6 +1582,7 @@ def obtener_normas_test(
 
             WHERE bp.convocatoria_id = ?
               AND bp.estado = 'INCLUIDA'
+              AND {condicion_fuente}
               AND UPPER(
                     TRIM(
                         COALESCE(
@@ -1668,6 +1710,7 @@ def crear_test(
     temas_seleccionados: list[int] | None = None,
     normas_seleccionadas: list[str] | None = None,
     modo_seleccion: str = "TEMA",
+    fuentes_seleccionadas: list[str] | None = None,
 ) -> dict:
     """
     Crea un test proporcionalmente entre los elementos seleccionados.
@@ -1691,6 +1734,25 @@ def crear_test(
         raise ValueError(
             "El modo de selección del test no es válido."
         )
+
+    fuentes = {
+        str(x).strip().upper()
+        for x in (fuentes_seleccionadas or ["REAL", "IA"])
+        if str(x).strip()
+    }
+
+    if not fuentes or fuentes - {"REAL", "IA"}:
+        raise ValueError(
+            "Debe seleccionar al menos una fuente válida: REAL y/o IA."
+        )
+
+    condicion_fuente = (
+        "LOWER(TRIM(lp.tipo_fuente)) = 'ia_generada'"
+        if fuentes == {"IA"}
+        else "LOWER(TRIM(lp.tipo_fuente)) <> 'ia_generada'"
+        if fuentes == {"REAL"}
+        else "1 = 1"
+    )
 
     temas_ids = sorted(
         {
@@ -1834,6 +1896,7 @@ def crear_test(
 
                 WHERE bp.convocatoria_id = ?
                   AND bp.estado = 'INCLUIDA'
+                  AND {condicion_fuente}
                   AND tt.id IN ({marcadores})
                 """,
                 (
@@ -1907,6 +1970,7 @@ def crear_test(
 
                 WHERE bp.convocatoria_id = ?
                   AND bp.estado = 'INCLUIDA'
+                  AND {condicion_fuente}
                   AND UPPER(
                         TRIM(
                             COALESCE(
@@ -1993,6 +2057,7 @@ def crear_test(
 
                 WHERE bp.convocatoria_id = ?
                   AND bp.estado = 'INCLUIDA'
+                  AND {condicion_fuente}
                   AND UPPER(
                         TRIM(
                             COALESCE(

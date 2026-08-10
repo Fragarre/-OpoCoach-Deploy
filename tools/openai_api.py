@@ -274,7 +274,7 @@ def generar_explicacion_ia(
 
 def generar_analisis_rendimiento_ia(
     prompt,
-    modelo="gpt-5.4-mini",
+    modelo="gpt-5.4",
 ):
     """
     Genera el comentario interpretativo del rendimiento acumulado.

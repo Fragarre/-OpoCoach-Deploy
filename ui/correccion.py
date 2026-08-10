@@ -1,4 +1,5 @@
 import streamlit as st
+import streamlit.components.v1 as components
 
 from lib.analisis_rendimiento import (
     generar_analisis_rendimiento,
@@ -9,6 +10,37 @@ from lib.repositorio import (
     obtener_resultado_acumulado_convocatoria,
     obtener_resultado_simulacro,
 )
+
+
+def desplazar_al_inicio() -> None:
+    """Desplaza la vista principal de Streamlit al inicio de la página."""
+
+    components.html(
+        """
+        <script>
+        const parentWindow = window.parent;
+        const parentDocument = parentWindow.document;
+
+        const contenedores = [
+            parentDocument.querySelector('[data-testid="stAppViewContainer"]'),
+            parentDocument.querySelector('[data-testid="stMain"]'),
+            parentDocument.scrollingElement,
+            parentDocument.documentElement,
+            parentDocument.body
+        ];
+
+        for (const contenedor of contenedores) {
+            if (contenedor && typeof contenedor.scrollTo === 'function') {
+                contenedor.scrollTo({top: 0, left: 0, behavior: 'instant'});
+            }
+        }
+
+        parentWindow.scrollTo(0, 0);
+        </script>
+        """,
+        height=0,
+        width=0,
+    )
 
 
 RESPUESTAS = ["A", "B", "C", "D"]
@@ -376,6 +408,10 @@ def mostrar_correccion(
 
     st.title(f"Corrección del {nombre_prueba}")
 
+    scroll_key = f"scroll_inicio_correccion_{simulacro_id}"
+    if st.session_state.pop(scroll_key, False):
+        desplazar_al_inicio()
+
     if not preguntas:
         st.warning(
             f"El {nombre_prueba} no contiene preguntas."
@@ -657,4 +693,5 @@ def mostrar_correccion(
                 )
             )
             st.session_state[modo_key] = "resultado"
+            st.session_state[scroll_key] = True
             st.rerun()

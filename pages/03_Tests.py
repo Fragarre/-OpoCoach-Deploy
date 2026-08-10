@@ -70,6 +70,23 @@ st.subheader(
     f'{convocatoria["codigo"]} — {convocatoria["puesto"]}'
 )
 
+FUENTES_DISPONIBLES = {
+    "Preguntas reales/importadas": "REAL",
+    "Preguntas generadas por IA": "IA",
+}
+CLAVE_FUENTES = f"fuentes_test_{convocatoria_id}"
+
+if CLAVE_FUENTES not in st.session_state:
+    st.session_state[CLAVE_FUENTES] = list(
+        FUENTES_DISPONIBLES.keys()
+    )
+
+fuentes_etiquetas = st.session_state[CLAVE_FUENTES]
+fuentes_seleccionadas = [
+    FUENTES_DISPONIBLES[etiqueta]
+    for etiqueta in fuentes_etiquetas
+]
+
 resultado_creacion = st.session_state.pop(
     "resultado_creacion_test",
     None,
@@ -85,10 +102,12 @@ if resultado_creacion is not None:
         st.warning(aviso)
 
 puntos = obtener_puntos_temario_test(
-    convocatoria_id
+    convocatoria_id,
+    fuentes_seleccionadas=fuentes_seleccionadas,
 )
 normas = obtener_normas_test(
-    convocatoria_id
+    convocatoria_id,
+    fuentes_seleccionadas=fuentes_seleccionadas,
 )
 
 puntos_disponibles = [
@@ -119,6 +138,21 @@ opciones_normas = {
     )
     for norma in normas_disponibles
 }
+
+st.multiselect(
+    "Fuente de las preguntas",
+    options=list(FUENTES_DISPONIBLES.keys()),
+    key=CLAVE_FUENTES,
+    help=(
+        "Permite crear el test con preguntas reales/importadas, "
+        "preguntas generadas por IA o ambas."
+    ),
+)
+
+if not fuentes_seleccionadas:
+    st.warning(
+        "Debe seleccionar al menos una fuente de preguntas."
+    )
 
 modo_etiqueta = st.radio(
     "Generar preguntas por",
@@ -180,6 +214,7 @@ with st.form(
         "Crear test",
         type="primary",
         use_container_width=True,
+        disabled=not fuentes_seleccionadas,
     )
 
 if crear:
@@ -212,6 +247,7 @@ if crear:
                 temas_seleccionados=temas_seleccionados,
                 normas_seleccionadas=normas_seleccionadas,
                 modo_seleccion=modo_seleccion,
+                fuentes_seleccionadas=fuentes_seleccionadas,
             )
 
             st.session_state[
