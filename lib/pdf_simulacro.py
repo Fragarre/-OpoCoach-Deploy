@@ -287,11 +287,9 @@ def generar_pdf_simulacro(
             Paragraph(
                 (
                     "<b>Seguridad en la respuesta:</b> "
-                    "( &nbsp; ) Muy seguro"
+                    "( &nbsp; ) Seguro"
                     "&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;"
-                    "( &nbsp; ) Bastante seguro"
-                    "&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;"
-                    "( &nbsp; ) Poco seguro"
+                    "( &nbsp; ) Menos seguro"
                 ),
                 estilo_seguridad,
             )

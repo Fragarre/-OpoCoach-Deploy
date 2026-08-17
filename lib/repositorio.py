@@ -601,16 +601,498 @@ def _seleccionar_sin_repeticion_reciente(
     return elegidas, len(reutilizadas)
 
 
+
+# =============================================================================
+# MODELO DE EXAMEN CONFIGURADO EN BASE DE DATOS
+# =============================================================================
+
+MAX_PREGUNTAS_LIBRES_POR_NORMA = 2
+
+
+def _tabla_modelo_examen_existe(con: sqlite3.Connection) -> bool:
+    """Comprueba que la base maestra contiene la tabla del modelo de examen."""
+
+    return con.execute(
+        """
+        SELECT 1
+        FROM sqlite_master
+        WHERE type = 'table'
+          AND name = 'convocatoria_modelo_bloques'
+        """
+    ).fetchone() is not None
+
+
+def _cargar_bloques_modelo_parte(
+    con: sqlite3.Connection,
+    convocatoria_parte_id: int,
+) -> list[sqlite3.Row]:
+    """Carga, en orden, los bloques configurados para una parte."""
+
+    return con.execute(
+        """
+        SELECT
+            cmb.id,
+            cmb.convocatoria_parte_id,
+            cmb.orden,
+            cmb.tipo_bloque,
+            cmb.norma_id,
+            cmb.cantidad,
+            n.nombre_canonico AS norma
+        FROM convocatoria_modelo_bloques cmb
+        LEFT JOIN normas n
+            ON n.id = cmb.norma_id
+        WHERE cmb.convocatoria_parte_id = ?
+        ORDER BY cmb.orden, cmb.id
+        """,
+        (convocatoria_parte_id,),
+    ).fetchall()
+
+
+def _es_juridica_teorica(pregunta) -> bool:
+    """Identifica una candidata apta para una parte jurídica teórica modelada."""
+
+    return (
+        str(pregunta["tipo_clasificacion"] or "").strip().upper()
+        == "JURIDICA"
+        and str(pregunta["teorica_practica"] or "").strip().upper()
+        == "TEORICA"
+    )
+
+
+def _seleccionar_preguntas_norma_modelo(
+    candidatas_parte: list,
+    norma_id: int,
+    cantidad: int,
+    preguntas_usadas: set[int],
+    ultima_aparicion: dict[int, datetime],
+    parte_nombre: str,
+    norma_nombre: str,
+) -> list:
+    """Selecciona la cantidad ya ajustada de un bloque NORMA."""
+
+    candidatas = [
+        pregunta
+        for pregunta in candidatas_parte
+        if int(pregunta["pregunta_id"]) not in preguntas_usadas
+        and _es_juridica_teorica(pregunta)
+        and pregunta["norma_id_normalizada"] is not None
+        and int(pregunta["norma_id_normalizada"]) == int(norma_id)
+    ]
+
+    if len(candidatas) < cantidad:
+        raise ValueError(
+            f"No hay suficientes preguntas para {parte_nombre} — {norma_nombre}. "
+            f"Se necesitan {cantidad} y solo hay {len(candidatas)}."
+        )
+
+    elegidas, _ = _seleccionar_sin_repeticion_reciente(
+        candidatas=candidatas,
+        cantidad=cantidad,
+        ultima_aparicion=ultima_aparicion,
+    )
+    return elegidas
+
+
+def _seleccionar_preguntas_libres_modelo(
+    candidatas_parte: list,
+    cantidad_total: int,
+    normas_preasignadas: set[int],
+    preguntas_usadas: set[int],
+    ultima_aparicion: dict[int, datetime],
+    parte_nombre: str,
+) -> list:
+    """
+    Selecciona todas las preguntas LIBRE de una parte en una sola operación.
+
+    Reglas acordadas:
+    - solo normas de la misma parte, porque las candidatas ya proceden del banco
+      y de convocatoria_parte_id;
+    - se excluyen todas las normas que tengan un bloque NORMA en esa parte;
+    - máximo dos preguntas por norma sumando todos los bloques LIBRE de la parte.
+    """
+
+    if cantidad_total <= 0:
+        return []
+
+    por_norma: dict[int, list] = {}
+
+    for pregunta in candidatas_parte:
+        pregunta_id = int(pregunta["pregunta_id"])
+        norma_id = pregunta["norma_id_normalizada"]
+
+        if pregunta_id in preguntas_usadas:
+            continue
+        if not _es_juridica_teorica(pregunta):
+            continue
+        if norma_id is None:
+            continue
+
+        norma_id = int(norma_id)
+        if norma_id in normas_preasignadas:
+            continue
+
+        por_norma.setdefault(norma_id, []).append(pregunta)
+
+    capacidad = sum(
+        min(MAX_PREGUNTAS_LIBRES_POR_NORMA, len(preguntas))
+        for preguntas in por_norma.values()
+    )
+
+    if capacidad < cantidad_total:
+        raise ValueError(
+            f"No hay suficientes preguntas para los bloques LIBRE de "
+            f"{parte_nombre}. Se necesitan {cantidad_total} y la capacidad "
+            f"disponible, con máximo {MAX_PREGUNTAS_LIBRES_POR_NORMA} por "
+            f"norma y excluyendo las normas preasignadas, es {capacidad}."
+        )
+
+    elegidas: list = []
+    seleccionadas_por_norma: dict[int, int] = {
+        norma_id: 0 for norma_id in por_norma
+    }
+    normas = list(por_norma)
+
+    # Primera vuelta: como máximo una por norma antes de empezar una segunda.
+    # Esto favorece el objetivo de que los bloques libres recorran normas que no
+    # forman parte del reparto fijo, sin alterar el límite máximo acordado.
+    for _vuelta in range(MAX_PREGUNTAS_LIBRES_POR_NORMA):
+        random.shuffle(normas)
+
+        for norma_id in normas:
+            if len(elegidas) >= cantidad_total:
+                break
+
+            if (
+                seleccionadas_por_norma[norma_id]
+                >= MAX_PREGUNTAS_LIBRES_POR_NORMA
+            ):
+                continue
+
+            ya_elegidas = {
+                int(pregunta["pregunta_id"])
+                for pregunta in elegidas
+            }
+            disponibles_norma = [
+                pregunta
+                for pregunta in por_norma[norma_id]
+                if int(pregunta["pregunta_id"]) not in ya_elegidas
+            ]
+
+            if not disponibles_norma:
+                continue
+
+            seleccion, _ = _seleccionar_sin_repeticion_reciente(
+                candidatas=disponibles_norma,
+                cantidad=1,
+                ultima_aparicion=ultima_aparicion,
+            )
+
+            elegidas.extend(seleccion)
+            seleccionadas_por_norma[norma_id] += 1
+
+        if len(elegidas) >= cantidad_total:
+            break
+
+    if len(elegidas) != cantidad_total:
+        raise RuntimeError(
+            f"No se ha podido completar la selección LIBRE de {parte_nombre}."
+        )
+
+    random.shuffle(elegidas)
+    return elegidas
+
+
+def _planificar_cantidades_modelo(
+    bloques: list[sqlite3.Row],
+    candidatas_parte: list,
+    parte_nombre: str,
+) -> dict[int, int]:
+    """
+    Ajusta únicamente lo imprescindible cuando una norma queda una pregunta
+    por debajo del modelo. Cada bloque puede desviarse como máximo en una
+    pregunta y un bloque NORMA nunca puede quedar a cero.
+    """
+
+    cantidades = {
+        int(bloque["id"]): int(bloque["cantidad"])
+        for bloque in bloques
+    }
+
+    bloques_norma_por_norma: dict[int, list[sqlite3.Row]] = {}
+    disponibles_por_norma: dict[int, int] = {}
+
+    for bloque in bloques:
+        if str(bloque["tipo_bloque"]) != "NORMA":
+            continue
+        if bloque["norma_id"] is None:
+            raise ValueError(
+                f"El bloque {bloque['orden']} de {parte_nombre} es NORMA "
+                "pero no tiene norma_id."
+            )
+
+        norma_id = int(bloque["norma_id"])
+        bloques_norma_por_norma.setdefault(norma_id, []).append(bloque)
+
+    for norma_id in bloques_norma_por_norma:
+        disponibles_por_norma[norma_id] = sum(
+            1
+            for pregunta in candidatas_parte
+            if _es_juridica_teorica(pregunta)
+            and pregunta["norma_id_normalizada"] is not None
+            and int(pregunta["norma_id_normalizada"]) == norma_id
+        )
+
+    deficit_total = 0
+
+    # Solo se permite reducir un bloque NORMA en una pregunta. Si el modelo
+    # pide una sola pregunta, esa pregunta sigue siendo obligatoria.
+    for norma_id, bloques_norma in bloques_norma_por_norma.items():
+        objetivo = sum(int(bloque["cantidad"]) for bloque in bloques_norma)
+        disponibles = disponibles_por_norma[norma_id]
+
+        if disponibles >= objetivo:
+            continue
+
+        deficit = objetivo - disponibles
+        reducibles = [
+            bloque
+            for bloque in reversed(bloques_norma)
+            if int(bloque["cantidad"]) > 1
+        ]
+
+        if deficit > len(reducibles):
+            norma_nombre = str(
+                bloques_norma[0]["norma"] or f"norma_id {norma_id}"
+            )
+            minimo = objetivo - len(reducibles)
+            raise ValueError(
+                f"No hay suficientes preguntas para {parte_nombre} — "
+                f"{norma_nombre}. El modelo prevé {objetivo}, el mínimo "
+                f"admisible es {minimo} y solo hay {disponibles}."
+            )
+
+        for bloque in reducibles[:deficit]:
+            bloque_id = int(bloque["id"])
+            cantidades[bloque_id] -= 1
+            deficit_total += 1
+
+    if deficit_total == 0:
+        return cantidades
+
+    # La compensación mantiene el total de la parte. Se prefieren los bloques
+    # LIBRE; cada bloque puede crecer como máximo en una pregunta.
+    bloques_libres = [
+        bloque
+        for bloque in bloques
+        if str(bloque["tipo_bloque"]) == "LIBRE"
+    ]
+
+    normas_preasignadas = set(bloques_norma_por_norma)
+    por_norma_libre: dict[int, int] = {}
+    for pregunta in candidatas_parte:
+        if not _es_juridica_teorica(pregunta):
+            continue
+        norma_id = pregunta["norma_id_normalizada"]
+        if norma_id is None:
+            continue
+        norma_id = int(norma_id)
+        if norma_id in normas_preasignadas:
+            continue
+        por_norma_libre[norma_id] = por_norma_libre.get(norma_id, 0) + 1
+
+    capacidad_libre = sum(
+        min(MAX_PREGUNTAS_LIBRES_POR_NORMA, cantidad)
+        for cantidad in por_norma_libre.values()
+    )
+    objetivo_libre = sum(
+        int(cantidades[int(bloque["id"])])
+        for bloque in bloques_libres
+    )
+    extra_libre_disponible = max(0, capacidad_libre - objetivo_libre)
+
+    for bloque in bloques_libres:
+        if deficit_total <= 0 or extra_libre_disponible <= 0:
+            break
+        cantidades[int(bloque["id"])] += 1
+        deficit_total -= 1
+        extra_libre_disponible -= 1
+
+    if deficit_total <= 0:
+        return cantidades
+
+    # Si no basta LIBRE, una norma con disponibilidad puede absorber como
+    # máximo una pregunta adicional por bloque, manteniendo el patrón próximo.
+    usados_por_norma = {
+        norma_id: sum(
+            cantidades[int(bloque["id"])]
+            for bloque in bloques_norma
+        )
+        for norma_id, bloques_norma in bloques_norma_por_norma.items()
+    }
+
+    receptores = [
+        bloque
+        for bloque in bloques
+        if str(bloque["tipo_bloque"]) == "NORMA"
+        and bloque["norma_id"] is not None
+    ]
+    random.shuffle(receptores)
+
+    for bloque in receptores:
+        if deficit_total <= 0:
+            break
+
+        norma_id = int(bloque["norma_id"])
+        if usados_por_norma[norma_id] >= disponibles_por_norma[norma_id]:
+            continue
+
+        bloque_id = int(bloque["id"])
+        if cantidades[bloque_id] >= int(bloque["cantidad"]) + 1:
+            continue
+
+        cantidades[bloque_id] += 1
+        usados_por_norma[norma_id] += 1
+        deficit_total -= 1
+
+    if deficit_total > 0:
+        raise ValueError(
+            f"No se puede mantener el total de {parte_nombre} respetando "
+            "el margen máximo de una pregunta por bloque del modelo."
+        )
+
+    return cantidades
+
+
+def _seleccionar_parte_segun_modelo(
+    parte,
+    bloques: list[sqlite3.Row],
+    candidatas_parte: list,
+    ultima_aparicion: dict[int, datetime],
+    preguntas_usadas: set[int],
+) -> list[tuple[sqlite3.Row, sqlite3.Row]]:
+    """Construye una parte jurídica teórica siguiendo sus bloques configurados."""
+
+    nombre_parte = str(parte["nombre"])
+    total_parte = int(parte["numero_preguntas"])
+
+    suma_bloques = sum(int(bloque["cantidad"]) for bloque in bloques)
+    if suma_bloques != total_parte:
+        raise ValueError(
+            f"El modelo de {nombre_parte} suma {suma_bloques} preguntas, "
+            f"pero la parte tiene configuradas {total_parte}."
+        )
+
+    ordenes = [int(bloque["orden"]) for bloque in bloques]
+    if ordenes != list(range(1, len(ordenes) + 1)):
+        raise ValueError(
+            f"El modelo de {nombre_parte} no tiene un orden consecutivo válido."
+        )
+
+    tipos_invalidos = [
+        str(bloque["tipo_bloque"])
+        for bloque in bloques
+        if str(bloque["tipo_bloque"]) not in {"NORMA", "LIBRE"}
+    ]
+    if tipos_invalidos:
+        raise ValueError(
+            f"El modelo de {nombre_parte} contiene tipos de bloque no válidos."
+        )
+
+    cantidades = _planificar_cantidades_modelo(
+        bloques=bloques,
+        candidatas_parte=candidatas_parte,
+        parte_nombre=nombre_parte,
+    )
+
+    normas_preasignadas = {
+        int(bloque["norma_id"])
+        for bloque in bloques
+        if str(bloque["tipo_bloque"]) == "NORMA"
+        and bloque["norma_id"] is not None
+    }
+
+    cantidad_libre = sum(
+        cantidades[int(bloque["id"])]
+        for bloque in bloques
+        if str(bloque["tipo_bloque"]) == "LIBRE"
+    )
+
+    libres = _seleccionar_preguntas_libres_modelo(
+        candidatas_parte=candidatas_parte,
+        cantidad_total=cantidad_libre,
+        normas_preasignadas=normas_preasignadas,
+        preguntas_usadas=preguntas_usadas,
+        ultima_aparicion=ultima_aparicion,
+        parte_nombre=nombre_parte,
+    )
+    indice_libre = 0
+
+    resultado: list[tuple[sqlite3.Row, sqlite3.Row]] = []
+
+    for bloque in bloques:
+        tipo_bloque = str(bloque["tipo_bloque"])
+        cantidad = cantidades[int(bloque["id"])]
+
+        if tipo_bloque == "NORMA":
+            norma_id = int(bloque["norma_id"])
+            norma_nombre = str(bloque["norma"] or f"norma_id {norma_id}")
+            elegidas = _seleccionar_preguntas_norma_modelo(
+                candidatas_parte=candidatas_parte,
+                norma_id=norma_id,
+                cantidad=cantidad,
+                preguntas_usadas=preguntas_usadas,
+                ultima_aparicion=ultima_aparicion,
+                parte_nombre=nombre_parte,
+                norma_nombre=norma_nombre,
+            )
+        else:
+            fin = indice_libre + cantidad
+            elegidas = libres[indice_libre:fin]
+            indice_libre = fin
+
+            if len(elegidas) != cantidad:
+                raise RuntimeError(
+                    f"El bloque LIBRE {bloque['orden']} de {nombre_parte} "
+                    "no ha podido completarse."
+                )
+
+        for pregunta in elegidas:
+            pregunta_id = int(pregunta["pregunta_id"])
+            if pregunta_id in preguntas_usadas:
+                raise RuntimeError(
+                    f"La pregunta {pregunta_id} se ha seleccionado dos veces "
+                    "en el mismo simulacro."
+                )
+            preguntas_usadas.add(pregunta_id)
+            resultado.append((parte, pregunta))
+
+    if indice_libre != len(libres):
+        raise RuntimeError(
+            f"La distribución de bloques LIBRE de {nombre_parte} es incoherente."
+        )
+
+    if len(resultado) != total_parte:
+        raise RuntimeError(
+            f"El modelo de {nombre_parte} ha generado {len(resultado)} "
+            f"preguntas en lugar de {total_parte}."
+        )
+
+    return resultado
+
+
 def crear_simulacro(
     convocatoria_id: int,
     origenes_seleccionados: list[str],
     fuentes_seleccionadas: list[str] | None = None,
 ) -> int:
     """
-    Genera un simulacro completo.
+    Genera un simulacro completo a partir del banco de la convocatoria.
 
-    Lee las preguntas desde oposiciones.sqlite3 y guarda el simulacro
-    inmutable en usuario.sqlite3.
+    - El número y orden de las partes procede de convocatoria_partes.
+    - Las partes que tienen filas en convocatoria_modelo_bloques se construyen
+      exactamente según sus bloques NORMA/LIBRE.
+    - Las partes sin modelo de bloques se seleccionan aleatoriamente dentro de
+      su banco (por ejemplo, prácticas y partes no jurídicas).
     """
 
     origenes_validos = {"A1", "A2", "C1", "C2"}
@@ -627,18 +1109,29 @@ def crear_simulacro(
             "Debe seleccionar al menos un origen de preguntas."
         )
 
-    origenes_no_validos = set(origenes) - origenes_validos
-
-    if origenes_no_validos:
+    if set(origenes) - origenes_validos:
         raise ValueError(
             "Existe algún origen de preguntas no válido."
         )
 
-    marcadores_origen = ", ".join("?" for _ in origenes)
+    marcadores_origen = ", ".join(
+        "?" for _ in origenes
+    )
 
-    fuentes = {str(x).strip().upper() for x in (fuentes_seleccionadas or ["REAL", "IA"]) if str(x).strip()}
+    fuentes = {
+        str(x).strip().upper()
+        for x in (
+            fuentes_seleccionadas
+            or ["REAL", "IA"]
+        )
+        if str(x).strip()
+    }
+
     if not fuentes or fuentes - {"REAL", "IA"}:
-        raise ValueError("Debe seleccionar al menos una fuente válida: REAL y/o IA.")
+        raise ValueError(
+            "Debe seleccionar al menos una fuente válida: REAL y/o IA."
+        )
+
     condicion_fuente = (
         "LOWER(TRIM(lp.tipo_fuente)) = 'ia_generada'"
         if fuentes == {"IA"}
@@ -647,12 +1140,7 @@ def crear_simulacro(
         else "1 = 1"
     )
 
-    # -------------------------------------------------------------------------
-    # 1. Lectura de los datos maestros
-    # -------------------------------------------------------------------------
-
     with conectar() as con_catalogo:
-
         convocatoria = con_catalogo.execute(
             """
             SELECT
@@ -674,7 +1162,9 @@ def crear_simulacro(
         ).fetchone()
 
         if convocatoria is None:
-            raise ValueError("La convocatoria no existe.")
+            raise ValueError(
+                "La convocatoria no existe."
+            )
 
         partes = con_catalogo.execute(
             """
@@ -695,16 +1185,31 @@ def crear_simulacro(
                 "La convocatoria no tiene partes configuradas."
             )
 
-        total_partes = sum(
-            parte["numero_preguntas"]
-            for parte in partes
-        )
-
-        if total_partes != convocatoria["numero_preguntas"]:
+        if (
+            sum(
+                int(parte["numero_preguntas"])
+                for parte in partes
+            )
+            != int(convocatoria["numero_preguntas"])
+        ):
             raise ValueError(
                 "La suma de preguntas de las partes no coincide "
                 "con el total configurado en la convocatoria."
             )
+
+        if not _tabla_modelo_examen_existe(con_catalogo):
+            raise RuntimeError(
+                "La base no contiene convocatoria_modelo_bloques. "
+                "Configure el modelo de examen desde OpoCoach-Mantenimiento."
+            )
+
+        bloques_por_parte = {
+            int(parte["id"]): _cargar_bloques_modelo_parte(
+                con_catalogo,
+                int(parte["id"]),
+            )
+            for parte in partes
+        }
 
         candidatas = con_catalogo.execute(
             f"""
@@ -780,14 +1285,9 @@ def crear_simulacro(
             ),
         ).fetchall()
 
-    # -------------------------------------------------------------------------
-    # 2. Selección aleatoria de preguntas
-    # -------------------------------------------------------------------------
-
     preguntas_seleccionadas: list[
         tuple[sqlite3.Row, sqlite3.Row]
     ] = []
-
     preguntas_usadas: set[int] = set()
 
     ultima_aparicion = _obtener_ultima_aparicion_preguntas(
@@ -795,24 +1295,39 @@ def crear_simulacro(
     )
 
     for parte in partes:
+        parte_id = int(parte["id"])
+        nombre_parte = str(parte["nombre"])
+        cantidad = int(parte["numero_preguntas"])
 
         candidatas_parte = [
             pregunta
             for pregunta in candidatas
-            if pregunta["convocatoria_parte_id"] == parte["id"]
-            and pregunta["pregunta_id"] not in preguntas_usadas
+            if int(pregunta["convocatoria_parte_id"]) == parte_id
+            and int(pregunta["pregunta_id"]) not in preguntas_usadas
         ]
-
-        cantidad = parte["numero_preguntas"]
 
         if len(candidatas_parte) < cantidad:
             raise ValueError(
-                f'No hay suficientes preguntas para '
-                f'{parte["nombre"]}. '
-                f'Se necesitan {cantidad} y solo hay '
-                f'{len(candidatas_parte)}.'
+                f"No hay suficientes preguntas para {nombre_parte}. "
+                f"Se necesitan {cantidad} y solo hay "
+                f"{len(candidatas_parte)}."
             )
 
+        bloques = bloques_por_parte[parte_id]
+
+        if bloques:
+            elegidas_parte = _seleccionar_parte_segun_modelo(
+                parte=parte,
+                bloques=bloques,
+                candidatas_parte=candidatas_parte,
+                ultima_aparicion=ultima_aparicion,
+                preguntas_usadas=preguntas_usadas,
+            )
+            preguntas_seleccionadas.extend(elegidas_parte)
+            continue
+
+        # Partes sin modelo: selección aleatoria desde su banco. Aquí quedan,
+        # por diseño, las partes prácticas y las no jurídicas.
         elegidas, _ = _seleccionar_sin_repeticion_reciente(
             candidatas=candidatas_parte,
             cantidad=cantidad,
@@ -820,30 +1335,43 @@ def crear_simulacro(
         )
 
         for pregunta in elegidas:
-            preguntas_usadas.add(
-                pregunta["pregunta_id"]
-            )
-
-            preguntas_seleccionadas.append(
-                (parte, pregunta)
-            )
+            pregunta_id = int(pregunta["pregunta_id"])
+            if pregunta_id in preguntas_usadas:
+                raise RuntimeError(
+                    f"La pregunta {pregunta_id} se ha seleccionado dos veces "
+                    "en el mismo simulacro."
+                )
+            preguntas_usadas.add(pregunta_id)
+            preguntas_seleccionadas.append((parte, pregunta))
 
     if (
         len(preguntas_seleccionadas)
-        != convocatoria["numero_preguntas"]
+        != int(convocatoria["numero_preguntas"])
     ):
         raise ValueError(
             "El número de preguntas seleccionadas no coincide "
             "con el total de la convocatoria."
         )
 
-    # -------------------------------------------------------------------------
-    # 3. Escritura completa en usuario.sqlite3
-    # -------------------------------------------------------------------------
+    conteo_partes: dict[int, int] = {}
+    for parte, _pregunta in preguntas_seleccionadas:
+        parte_id = int(parte["id"])
+        conteo_partes[parte_id] = conteo_partes.get(parte_id, 0) + 1
+
+    for parte in partes:
+        parte_id = int(parte["id"])
+        esperado = int(parte["numero_preguntas"])
+        real = conteo_partes.get(parte_id, 0)
+        if real != esperado:
+            raise RuntimeError(
+                f"Validación del simulacro fallida: {parte['nombre']} "
+                f"contiene {real} preguntas y debe contener {esperado}."
+            )
 
     with conectar_usuario() as con_usuario:
-
-        con_usuario.execute("BEGIN IMMEDIATE")
+        con_usuario.execute(
+            "BEGIN IMMEDIATE"
+        )
 
         numero = con_usuario.execute(
             """
@@ -1077,9 +1605,8 @@ def guardar_respuesta_simulacro(
 
     seguridades_validas = {
         None,
-        "MUY_SEGURO",
-        "BASTANTE_SEGURO",
-        "POCO_SEGURO",
+        "SEGURO",
+        "MENOS_SEGURO",
     }
 
     if respuesta_usuario not in respuestas_validas:
@@ -1170,9 +1697,8 @@ def obtener_resultado_simulacro(
     respuestas_validas = {"A", "B", "C", "D"}
 
     etiquetas_seguridad = {
-        "MUY_SEGURO": "Muy seguro",
-        "BASTANTE_SEGURO": "Bastante seguro",
-        "POCO_SEGURO": "Poco seguro",
+        "SEGURO": "Seguro",
+        "MENOS_SEGURO": "Menos seguro",
     }
 
     aciertos = 0
@@ -1254,24 +1780,33 @@ def obtener_resultado_simulacro(
                 "Existe alguna respuesta del usuario no válida."
             )
 
-        if seguridad_usuario not in estadisticas_seguridad:
+        if (
+            seguridad_usuario is not None
+            and seguridad_usuario not in estadisticas_seguridad
+        ):
             raise ValueError(
-                "Existe alguna pregunta contestada sin un nivel "
-                "de seguridad válido."
+                "Existe alguna pregunta contestada con un nivel "
+                "de seguridad no válido."
             )
 
         estadistica_tema["contestadas"] += 1
-        estadistica_seguridad = estadisticas_seguridad[seguridad_usuario]
-        estadistica_seguridad["contestadas"] += 1
+
+        estadistica_seguridad = (
+            estadisticas_seguridad.get(seguridad_usuario)
+        )
+        if estadistica_seguridad is not None:
+            estadistica_seguridad["contestadas"] += 1
 
         if respuesta_usuario == respuesta_correcta:
             aciertos += 1
             estadistica_tema["aciertos"] += 1
-            estadistica_seguridad["aciertos"] += 1
+            if estadistica_seguridad is not None:
+                estadistica_seguridad["aciertos"] += 1
         else:
             fallos += 1
             estadistica_tema["fallos"] += 1
-            estadistica_seguridad["fallos"] += 1
+            if estadistica_seguridad is not None:
+                estadistica_seguridad["fallos"] += 1
 
     contestadas = aciertos + fallos
 
@@ -1364,7 +1899,8 @@ def obtener_resultado_simulacro(
             else 0.0
         )
 
-        resultado_seguridad.append(estadistica)
+        if contestadas_seguridad:
+            resultado_seguridad.append(estadistica)
 
     return {
         "simulacro_id": simulacro_id,
@@ -2439,9 +2975,8 @@ def obtener_resultado_acumulado_convocatoria(
 
     respuestas_validas = {"A", "B", "C", "D"}
     etiquetas_seguridad = {
-        "MUY_SEGURO": "Muy seguro",
-        "BASTANTE_SEGURO": "Bastante seguro",
-        "POCO_SEGURO": "Poco seguro",
+        "SEGURO": "Seguro",
+        "MENOS_SEGURO": "Menos seguro",
     }
 
     with conectar_usuario() as con:
@@ -2608,7 +3143,7 @@ def obtener_resultado_acumulado_convocatoria(
                 "no_contestadas": 0,
                 "aciertos": 0,
                 "fallos": 0,
-                "fallos_muy_seguro": 0,
+                "fallos_seguro": 0,
             }
 
         estadistica_tema = estadisticas_temas[
@@ -2642,7 +3177,7 @@ def obtener_resultado_acumulado_convocatoria(
                 "no_contestadas": 0,
                 "aciertos": 0,
                 "fallos": 0,
-                "fallos_muy_seguro": 0,
+                "fallos_seguro": 0,
             }
 
         estadistica_norma = estadisticas_normas[
@@ -2676,34 +3211,40 @@ def obtener_resultado_acumulado_convocatoria(
                 "no válida."
             )
 
-        if seguridad_usuario not in estadisticas_seguridad:
+        if (
+            seguridad_usuario is not None
+            and seguridad_usuario not in estadisticas_seguridad
+        ):
             raise ValueError(
-                "Existe alguna pregunta acumulada contestada sin un "
-                "nivel de seguridad válido."
+                "Existe alguna pregunta acumulada con un nivel "
+                "de seguridad no válido."
             )
 
         estadistica_tema["contestadas"] += 1
         estadistica_norma["contestadas"] += 1
 
         estadistica_seguridad = (
-            estadisticas_seguridad[seguridad_usuario]
+            estadisticas_seguridad.get(seguridad_usuario)
         )
-        estadistica_seguridad["contestadas"] += 1
+        if estadistica_seguridad is not None:
+            estadistica_seguridad["contestadas"] += 1
 
         if respuesta_usuario == respuesta_correcta:
             aciertos += 1
             estadistica_tema["aciertos"] += 1
             estadistica_norma["aciertos"] += 1
-            estadistica_seguridad["aciertos"] += 1
+            if estadistica_seguridad is not None:
+                estadistica_seguridad["aciertos"] += 1
         else:
             fallos += 1
             estadistica_tema["fallos"] += 1
             estadistica_norma["fallos"] += 1
-            estadistica_seguridad["fallos"] += 1
+            if estadistica_seguridad is not None:
+                estadistica_seguridad["fallos"] += 1
 
-            if seguridad_usuario == "MUY_SEGURO":
-                estadistica_tema["fallos_muy_seguro"] += 1
-                estadistica_norma["fallos_muy_seguro"] += 1
+            if seguridad_usuario == "SEGURO":
+                estadistica_tema["fallos_seguro"] += 1
+                estadistica_norma["fallos_seguro"] += 1
 
     contestadas = aciertos + fallos
 
@@ -2811,7 +3352,8 @@ def obtener_resultado_acumulado_convocatoria(
             else 0.0
         )
 
-        resultado_seguridad.append(estadistica)
+        if contestadas_seguridad:
+            resultado_seguridad.append(estadistica)
 
     firma_datos = hashlib.sha256(
         "\n".join(firma_partes).encode("utf-8")

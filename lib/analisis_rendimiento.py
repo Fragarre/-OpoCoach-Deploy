@@ -125,7 +125,7 @@ def construir_prompt_analisis_rendimiento(
             "entre las contestadas; "
             f'{tasa_fallos_contestadas:.1f} % de fallos entre las contestadas; '
             f'{tasa_omisiones:.1f} % de omisiones; '
-            f'{tema["fallos_muy_seguro"]} fallos marcados como Muy seguro.'
+            f'{tema["fallos_seguro"]} fallos marcados como Seguro.'
         )
 
     lineas_normas = []
@@ -155,7 +155,7 @@ def construir_prompt_analisis_rendimiento(
             "aciertos entre las contestadas; "
             f'{tasa_fallos_contestadas:.1f} % de fallos entre las contestadas; '
             f'{tasa_omisiones:.1f} % de omisiones; '
-            f'{norma["fallos_muy_seguro"]} fallos marcados como Muy seguro.'
+            f'{norma["fallos_seguro"]} fallos marcados como Seguro.'
         )
 
     lineas_seguridad = []
@@ -244,24 +244,24 @@ REGLAS OBLIGATORIAS
    hacer el opositor con ella.
 4. Distingue claramente entre:
    - riesgo de conocimiento: fallos u omisiones concentrados en materias;
-   - riesgo de falsa seguridad: fallos marcados como Muy seguro;
+   - riesgo de falsa seguridad: fallos marcados como Seguro;
    - riesgo estratégico: niveles de seguridad cuyo rendimiento observado se
      acerca o cae por debajo del umbral de equilibrio.
-5. Trata los fallos marcados como Muy seguro como señales especialmente
+5. Trata los fallos marcados como Seguro como señales especialmente
    importantes: pueden revelar conocimiento incorrectamente consolidado. No
    atribuyas causas psicológicas ni personales.
 6. Considera reducida cualquier muestra inferior a 5 preguntas y evita
    conclusiones firmes basadas en ella. Las muestras de 5 a 14 son
    intermedias y las de 15 o más permiten conclusiones más consistentes.
 7. Para priorizar estudio, combina tamaño de muestra, fallos, omisiones,
-   porcentaje de aciertos y fallos Muy seguro. No conviertas automáticamente
+   porcentaje de aciertos y fallos Seguro. No conviertas automáticamente
    el menor porcentaje en la máxima prioridad.
 8. En estrategia de examen, usa el margen respecto al umbral y el impacto
    observado de contestar frente a dejar en blanco. Si una categoría aporta
    puntuación positiva, dilo; si destruye puntuación, dilo claramente. No
    aconsejes contestar al azar.
 9. Cuando los datos lo permitan, identifica una política práctica distinta
-   para Muy seguro, Bastante seguro y Poco seguro. No uses una recomendación
+   para Seguro y Menos seguro. No uses una recomendación
    genérica común para los tres niveles.
 10. Las preguntas no contestadas carecen de nivel de seguridad. No supongas
     por qué se dejaron en blanco.

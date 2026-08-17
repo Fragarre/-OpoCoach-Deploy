@@ -46,9 +46,8 @@ def desplazar_al_inicio() -> None:
 RESPUESTAS = ["A", "B", "C", "D"]
 
 SEGURIDADES = {
-    "Muy seguro": "MUY_SEGURO",
-    "Bastante seguro": "BASTANTE_SEGURO",
-    "Poco seguro": "POCO_SEGURO",
+    "Seguro": "SEGURO",
+    "Menos seguro": "MENOS_SEGURO",
 }
 
 SEGURIDADES_INVERSAS = {
@@ -354,38 +353,38 @@ def mostrar_resultado(
         "aparecen agrupadas como «Informática»."
     )
 
-    st.divider()
-    st.subheader("Resultados acumulados por nivel de seguridad")
+    if resultado_acumulado["seguridad"]:
+        st.divider()
+        st.subheader("Resultados acumulados por nivel de seguridad")
 
-    datos_seguridad = []
+        datos_seguridad = []
 
-    for seguridad in resultado_acumulado["seguridad"]:
-        datos_seguridad.append(
-            {
-                "Seguridad": seguridad["seguridad"],
-                "Contestadas": seguridad["contestadas"],
-                "Aciertos": seguridad["aciertos"],
-                "% aciertos": (
-                    f'{seguridad["porcentaje_aciertos"]:.1f} %'
-                ),
-                "Fallos": seguridad["fallos"],
-                "% fallos": (
-                    f'{seguridad["porcentaje_fallos"]:.1f} %'
-                ),
-            }
+        for seguridad in resultado_acumulado["seguridad"]:
+            datos_seguridad.append(
+                {
+                    "Seguridad": seguridad["seguridad"],
+                    "Contestadas": seguridad["contestadas"],
+                    "Aciertos": seguridad["aciertos"],
+                    "% aciertos": (
+                        f'{seguridad["porcentaje_aciertos"]:.1f} %'
+                    ),
+                    "Fallos": seguridad["fallos"],
+                    "% fallos": (
+                        f'{seguridad["porcentaje_fallos"]:.1f} %'
+                    ),
+                }
+            )
+
+        st.dataframe(
+            datos_seguridad,
+            use_container_width=True,
+            hide_index=True,
         )
 
-    st.dataframe(
-        datos_seguridad,
-        use_container_width=True,
-        hide_index=True,
-    )
-
-    st.caption(
-        "Los porcentajes se calculan sobre todas las preguntas "
-        f"contestadas con cada nivel de seguridad en los {tipo_acumulado} "
-        "conservados."
-    )
+        st.caption(
+            "Los porcentajes se calculan únicamente sobre las preguntas "
+            "contestadas en pruebas en las que se valoró la seguridad."
+        )
 
     mostrar_analisis_rendimiento(
         resultado_actual=resultado,
@@ -460,23 +459,56 @@ def mostrar_correccion(
         )
         return
 
-    st.caption(
-        "Traslada las respuestas y el nivel de seguridad "
-        "marcados en el simulacro. Para dejar una pregunta "
-        "sin contestar, no selecciones ninguna opción o pulsa "
-        "de nuevo sobre la opción seleccionada."
+    seguridad_modo_key = f"evaluar_seguridad_{simulacro_id}"
+
+    if seguridad_modo_key not in st.session_state:
+        # Compatibilidad con pruebas ya guardadas:
+        # si alguna respuesta tiene seguridad, se abre con evaluación activa.
+        st.session_state[seguridad_modo_key] = any(
+            pregunta["seguridad_usuario"] is not None
+            for pregunta in preguntas
+        )
+
+    evaluar_seguridad = st.checkbox(
+        "Evaluar seguridad en las respuestas",
+        key=seguridad_modo_key,
+        help=(
+            "Si está activado, toda pregunta contestada debe indicar "
+            "Seguro o Menos seguro. Si está desactivado, la seguridad "
+            "no se solicita ni se incluye en sus estadísticas."
+        ),
+        on_change=marcar_correccion_modificada,
+        args=(simulacro_id,),
     )
+
+    if evaluar_seguridad:
+        st.caption(
+            "Traslada las respuestas y marca Seguro o Menos seguro en "
+            "todas las preguntas contestadas."
+        )
+    else:
+        st.caption(
+            "Traslada las respuestas. La valoración de seguridad está "
+            "desactivada y no es obligatoria."
+        )
 
     st.divider()
 
-    cabecera = st.columns(
-        [0.8, 2.2, 4.0],
-        vertical_alignment="center",
-    )
-
-    cabecera[0].markdown("**Pregunta**")
-    cabecera[1].markdown("**Respuesta**")
-    cabecera[2].markdown("**Seguridad**")
+    if evaluar_seguridad:
+        cabecera = st.columns(
+            [0.8, 2.2, 4.0],
+            vertical_alignment="center",
+        )
+        cabecera[0].markdown("**Pregunta**")
+        cabecera[1].markdown("**Respuesta**")
+        cabecera[2].markdown("**Seguridad**")
+    else:
+        cabecera = st.columns(
+            [0.8, 2.2],
+            vertical_alignment="center",
+        )
+        cabecera[0].markdown("**Pregunta**")
+        cabecera[1].markdown("**Respuesta**")
 
     st.divider()
 
@@ -486,38 +518,32 @@ def mostrar_correccion(
         simulacro_pregunta_id = pregunta[
             "simulacro_pregunta_id"
         ]
-
         numero = pregunta["orden"]
 
         respuesta_key, seguridad_key = (
             inicializar_estado_pregunta(
-                simulacro_pregunta_id=(
-                    simulacro_pregunta_id
-                ),
-                respuesta_guardada=pregunta[
-                    "respuesta_usuario"
-                ],
-                seguridad_guardada=pregunta[
-                    "seguridad_usuario"
-                ],
+                simulacro_pregunta_id=simulacro_pregunta_id,
+                respuesta_guardada=pregunta["respuesta_usuario"],
+                seguridad_guardada=pregunta["seguridad_usuario"],
             )
         )
 
-        fila = st.columns(
-            [0.8, 2.2, 4.0],
-            vertical_alignment="center",
-        )
+        if evaluar_seguridad:
+            fila = st.columns(
+                [0.8, 2.2, 4.0],
+                vertical_alignment="center",
+            )
+        else:
+            fila = st.columns(
+                [0.8, 2.2],
+                vertical_alignment="center",
+            )
 
-        fila[0].markdown(
-            f"### {numero}"
-        )
+        fila[0].markdown(f"### {numero}")
 
         with fila[1]:
             respuesta_usuario = st.segmented_control(
-                label=(
-                    f"Respuesta de la pregunta "
-                    f"{numero}"
-                ),
+                label=f"Respuesta de la pregunta {numero}",
                 options=RESPUESTAS,
                 selection_mode="single",
                 required=False,
@@ -528,56 +554,41 @@ def mostrar_correccion(
                 args=(simulacro_id,),
             )
 
-        if respuesta_usuario is None:
-            st.session_state[
-                seguridad_key
-            ] = None
+        if respuesta_usuario is None or not evaluar_seguridad:
+            st.session_state[seguridad_key] = None
 
-        with fila[2]:
-            seguridad_etiqueta = (
-                st.segmented_control(
-                    label=(
-                        f"Seguridad de la pregunta "
-                        f"{numero}"
-                    ),
-                    options=list(
-                        SEGURIDADES.keys()
-                    ),
+        seguridad_etiqueta = None
+
+        if evaluar_seguridad:
+            with fila[2]:
+                seguridad_etiqueta = st.segmented_control(
+                    label=f"Seguridad de la pregunta {numero}",
+                    options=list(SEGURIDADES.keys()),
                     selection_mode="single",
                     required=False,
                     key=seguridad_key,
-                    disabled=(
-                        respuesta_usuario is None
-                    ),
+                    disabled=(respuesta_usuario is None),
                     label_visibility="collapsed",
                     width="stretch",
-                    on_change=(
-                        marcar_correccion_modificada
-                    ),
+                    on_change=marcar_correccion_modificada,
                     args=(simulacro_id,),
                 )
-            )
 
         seguridad_usuario = (
-            SEGURIDADES.get(
-                seguridad_etiqueta
+            SEGURIDADES.get(seguridad_etiqueta)
+            if (
+                evaluar_seguridad
+                and respuesta_usuario is not None
             )
-            if respuesta_usuario is not None
             else None
         )
 
         respuestas_formulario.append(
             {
                 "numero": numero,
-                "simulacro_pregunta_id": (
-                    simulacro_pregunta_id
-                ),
-                "respuesta_usuario": (
-                    respuesta_usuario
-                ),
-                "seguridad_usuario": (
-                    seguridad_usuario
-                ),
+                "simulacro_pregunta_id": simulacro_pregunta_id,
+                "respuesta_usuario": respuesta_usuario,
+                "seguridad_usuario": seguridad_usuario,
             }
         )
 
@@ -602,7 +613,7 @@ def mostrar_correccion(
             )
         ]
 
-        if preguntas_sin_seguridad:
+        if evaluar_seguridad and preguntas_sin_seguridad:
             numeros = ", ".join(
                 str(numero)
                 for numero in preguntas_sin_seguridad
