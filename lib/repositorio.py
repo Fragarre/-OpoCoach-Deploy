@@ -1638,6 +1638,63 @@ def guardar_respuesta_simulacro(
     return cursor.rowcount == 1
 
 
+def obtener_tiempo_correccion(
+    simulacro_id: int,
+) -> int:
+    """Devuelve el tiempo acumulado de corrección, en segundos."""
+    with conectar_usuario() as con:
+        fila = con.execute(
+            """
+            SELECT COALESCE(tiempo_correccion_segundos, 0)
+            FROM simulacros
+            WHERE id = ?
+            """,
+            (simulacro_id,),
+        ).fetchone()
+
+    if fila is None:
+        raise ValueError("La prueba no existe.")
+
+    return max(0, int(fila[0] or 0))
+
+
+def guardar_tiempo_correccion(
+    simulacro_id: int,
+    segundos_adicionales: int,
+) -> int:
+    """Añade tiempo de corrección y devuelve el total acumulado."""
+    segundos = max(0, int(segundos_adicionales))
+
+    with conectar_usuario() as con:
+        cursor = con.execute(
+            """
+            UPDATE simulacros
+            SET tiempo_correccion_segundos =
+                    COALESCE(tiempo_correccion_segundos, 0) + ?,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+            """,
+            (segundos, simulacro_id),
+        )
+
+        if cursor.rowcount != 1:
+            raise ValueError("La prueba no existe.")
+
+        fila = con.execute(
+            """
+            SELECT COALESCE(tiempo_correccion_segundos, 0)
+            FROM simulacros
+            WHERE id = ?
+            """,
+            (simulacro_id,),
+        ).fetchone()
+
+    if fila is None:
+        raise ValueError("La prueba no existe.")
+
+    return max(0, int(fila[0] or 0))
+
+
 def obtener_resultado_simulacro(
     simulacro_id: int,
 ) -> dict:
@@ -1659,7 +1716,9 @@ def obtener_resultado_simulacro(
                 valoracion_test_acierto,
                 valoracion_test_fallo,
                 valoracion_test_no_contesta,
-                factor_escala_nota
+                factor_escala_nota,
+                COALESCE(tiempo_correccion_segundos, 0)
+                    AS tiempo_correccion_segundos
             FROM simulacros
             WHERE id = ?
             """,
@@ -1919,6 +1978,9 @@ def obtener_resultado_simulacro(
         "puntuacion_bruta": puntuacion_bruta,
         "factor_escala_nota": factor_escala,
         "nota": nota,
+        "tiempo_correccion_segundos": int(
+            simulacro["tiempo_correccion_segundos"] or 0
+        ),
         "temas": resultado_temas,
         "seguridad": resultado_seguridad,
     }

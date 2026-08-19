@@ -1,3 +1,5 @@
+import time
+
 import streamlit as st
 import streamlit.components.v1 as components
 
@@ -6,7 +8,9 @@ from lib.analisis_rendimiento import (
 )
 from lib.repositorio import (
     guardar_respuesta_simulacro,
+    guardar_tiempo_correccion,
     obtener_preguntas_simulacro,
+    obtener_tiempo_correccion,
     obtener_resultado_acumulado_convocatoria,
     obtener_resultado_simulacro,
 )
@@ -111,6 +115,71 @@ def marcar_correccion_modificada(
     # cuando vuelvan a mostrarse los resultados guardados.
 
 
+
+
+def formatear_tiempo(segundos: int) -> str:
+    total = max(0, int(segundos))
+    horas, resto = divmod(total, 3600)
+    minutos, segundos_restantes = divmod(resto, 60)
+
+    if horas:
+        return (
+            f"{horas} h {minutos:02d} min "
+            f"{segundos_restantes:02d} s"
+        )
+
+    return f"{minutos} min {segundos_restantes:02d} s"
+
+
+def mostrar_cronometro_en_vivo(
+    inicio_epoch: float,
+    tiempo_previo: int,
+) -> None:
+    inicio_ms = int(float(inicio_epoch) * 1000)
+    previo = max(0, int(tiempo_previo))
+
+    components.html(
+        f"""
+        <div style="font-family:Arial,sans-serif;font-size:1.05rem;
+                    font-weight:600;padding:0.35rem 0;">
+            Tiempo transcurrido:
+            <span id="opocoach-crono">00:00</span>
+        </div>
+        <script>
+        const inicio = {inicio_ms};
+        const previo = {previo};
+
+        function pintarCrono() {{
+            const sesion = Math.max(
+                0,
+                Math.floor((Date.now() - inicio) / 1000)
+            );
+            const total = previo + sesion;
+            const horas = Math.floor(total / 3600);
+            const minutos = Math.floor((total % 3600) / 60);
+            const segundos = total % 60;
+
+            let texto;
+            if (horas > 0) {{
+                texto =
+                    String(horas).padStart(2, "0") + ":" +
+                    String(minutos).padStart(2, "0") + ":" +
+                    String(segundos).padStart(2, "0");
+            }} else {{
+                texto =
+                    String(minutos).padStart(2, "0") + ":" +
+                    String(segundos).padStart(2, "0");
+            }}
+
+            document.getElementById("opocoach-crono").textContent = texto;
+        }}
+
+        pintarCrono();
+        setInterval(pintarCrono, 1000);
+        </script>
+        """,
+        height=45,
+    )
 
 
 def mostrar_analisis_rendimiento(
@@ -231,6 +300,13 @@ def mostrar_resultado(
     fila_2[2].metric(
         "Nota",
         f'{resultado["nota"]:.2f}',
+    )
+
+    st.metric(
+        "Tiempo empleado",
+        formatear_tiempo(
+            resultado.get("tiempo_correccion_segundos", 0)
+        ),
     )
 
     st.caption(
@@ -421,6 +497,9 @@ def mostrar_correccion(
     resultado_key = (
         f"resultado_simulacro_{simulacro_id}"
     )
+    inicio_tiempo_key = f"inicio_tiempo_correccion_{simulacro_id}"
+    tiempo_previo_key = f"tiempo_previo_correccion_{simulacro_id}"
+    mostrar_crono_key = f"mostrar_cronometro_{simulacro_id}"
 
     if modo_key not in st.session_state:
         hay_respuestas_guardadas = any(
@@ -449,6 +528,10 @@ def mostrar_correccion(
             key=f"modificar_respuestas_{simulacro_id}",
         ):
             st.session_state[modo_key] = "edicion"
+            st.session_state[tiempo_previo_key] = (
+                obtener_tiempo_correccion(simulacro_id)
+            )
+            st.session_state[inicio_tiempo_key] = time.time()
             st.rerun()
 
         st.divider()
@@ -458,6 +541,30 @@ def mostrar_correccion(
             nombre_prueba=nombre_prueba,
         )
         return
+
+    if tiempo_previo_key not in st.session_state:
+        st.session_state[tiempo_previo_key] = (
+            obtener_tiempo_correccion(simulacro_id)
+        )
+
+    if inicio_tiempo_key not in st.session_state:
+        st.session_state[inicio_tiempo_key] = time.time()
+
+    mostrar_cronometro = st.toggle(
+        "Mostrar cronómetro",
+        value=False,
+        key=mostrar_crono_key,
+        help=(
+            "El tiempo se registra igualmente aunque el cronómetro "
+            "permanezca oculto."
+        ),
+    )
+
+    if mostrar_cronometro:
+        mostrar_cronometro_en_vivo(
+            inicio_epoch=st.session_state[inicio_tiempo_key],
+            tiempo_previo=st.session_state[tiempo_previo_key],
+        )
 
     seguridad_modo_key = f"evaluar_seguridad_{simulacro_id}"
 
@@ -698,6 +805,25 @@ def mostrar_correccion(
         )
 
         if calificar:
+            inicio = float(
+                st.session_state.get(
+                    inicio_tiempo_key,
+                    time.time(),
+                )
+            )
+            segundos_sesion = max(
+                0,
+                int(time.time() - inicio),
+            )
+
+            guardar_tiempo_correccion(
+                simulacro_id=simulacro_id,
+                segundos_adicionales=segundos_sesion,
+            )
+
+            st.session_state.pop(inicio_tiempo_key, None)
+            st.session_state.pop(tiempo_previo_key, None)
+
             st.session_state[resultado_key] = (
                 obtener_resultado_simulacro(
                     simulacro_id
