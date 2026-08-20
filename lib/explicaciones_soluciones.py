@@ -244,14 +244,36 @@ def _obtener_texto_articulo(
             (norma_id,),
         ).fetchall()
 
+    # Prioridad controlada: referencia exacta y, si no existe en el corpus,
+    # sus artículos/apartados padres. Ej.: 34.1.b -> 34.1 -> 34.
+    #
+    # No se altera ni "corrige" la referencia almacenada. Sólo se utiliza un
+    # padre cuando ese padre existe realmente entre las referencias de la norma.
+    candidatos_por_articulo: dict[str, str] = {}
+
     for fila in filas:
         articulo_candidato = _normalizar_articulo(
             fila["articulo_solicitado"]
         )
+        texto = _limpiar_texto(fila["texto"])
 
-        if articulo_candidato == articulo_buscado:
-            texto = _limpiar_texto(fila["texto"])
-            return texto or None
+        if articulo_candidato and texto:
+            candidatos_por_articulo.setdefault(
+                articulo_candidato,
+                texto,
+            )
+
+    referencias_busqueda = [articulo_buscado]
+    partes = articulo_buscado.split(".")
+
+    while len(partes) > 1:
+        partes = partes[:-1]
+        referencias_busqueda.append(".".join(partes))
+
+    for referencia in referencias_busqueda:
+        texto = candidatos_por_articulo.get(referencia)
+        if texto:
+            return texto
 
     return None
 
@@ -426,6 +448,24 @@ def _guardar_log(
         )
 
 
+def _limitar_comentario_palabras(
+    comentario: str,
+    max_palabras: int = 100,
+) -> str:
+    """
+    Garantiza de forma determinista el máximo de palabras del comentario.
+
+    Si la IA excede el límite, se conserva exactamente el comienzo hasta
+    max_palabras. No se realiza una segunda llamada IA por un exceso formal.
+    """
+    palabras = comentario.split()
+
+    if len(palabras) <= max_palabras:
+        return comentario
+
+    return " ".join(palabras[:max_palabras]).strip()
+
+
 def _validar_respuesta(
     respuesta: Any,
     lote: list[dict[str, Any]],
@@ -474,13 +514,10 @@ def _validar_respuesta(
                 f"El comentario del orden {orden} está vacío."
             )
 
-        palabras = len(comentario.split())
-
-        if palabras > 100:
-            raise ValueError(
-                f"El comentario del orden {orden} tiene "
-                f"{palabras} palabras; el máximo es 100."
-            )
+        comentario = _limitar_comentario_palabras(
+            comentario,
+            max_palabras=100,
+        )
 
         comentarios[orden] = comentario
 
