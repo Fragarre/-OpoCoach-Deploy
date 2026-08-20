@@ -39,7 +39,7 @@ from lib.database import conectar, conectar_usuario
 from tools.openai_api import seleccionar_fragmento_json
 
 
-TAMANO_LOTE = 16
+TAMANO_LOTE = 24
 MAX_TRABAJADORES_IA = 3
 MODELO_PREDETERMINADO = "gpt-5.4-nano"
 OPERACION_IA = "comentarios_pdf_soluciones"
