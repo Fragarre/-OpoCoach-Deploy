@@ -1,0 +1,3 @@
+Ejecutar desde la raíz del proyecto:
+
+python "<ruta al paquete>/OpoCoach_Web/instalar.py" --root .

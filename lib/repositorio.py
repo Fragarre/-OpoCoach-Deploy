@@ -35,10 +35,45 @@ def total_preguntas() -> int:
         ).fetchone()[0]
 
 
-def obtener_convocatorias() -> list[sqlite3.Row]:
+def _convocatorias_tiene_columna_activa(con: sqlite3.Connection) -> bool:
+    return "activa" in {
+        str(fila[1])
+        for fila in con.execute("PRAGMA table_info(convocatorias)").fetchall()
+    }
+
+
+def convocatoria_esta_activa(convocatoria_id: int) -> bool:
+    """
+    Fuente única para decidir si una convocatoria admite operaciones nuevas.
+
+    Compatibilidad: si la base todavía no tiene la columna ``activa``, toda
+    convocatoria existente se considera activa, como ocurría históricamente.
+    """
     with conectar() as con:
+        if _convocatorias_tiene_columna_activa(con):
+            fila = con.execute(
+                "SELECT activa FROM convocatorias WHERE id = ?",
+                (convocatoria_id,),
+            ).fetchone()
+            return fila is not None and int(fila["activa"] or 0) == 1
+
+        fila = con.execute(
+            "SELECT 1 FROM convocatorias WHERE id = ?",
+            (convocatoria_id,),
+        ).fetchone()
+        return fila is not None
+
+
+def obtener_convocatorias() -> list[sqlite3.Row]:
+    """Devuelve únicamente convocatorias disponibles para trabajo actual."""
+    with conectar() as con:
+        filtro = (
+            "WHERE COALESCE(activa, 1) = 1"
+            if _convocatorias_tiene_columna_activa(con)
+            else ""
+        )
         return con.execute(
-            """
+            f"""
             SELECT
                 id,
                 puesto,
@@ -46,6 +81,7 @@ def obtener_convocatorias() -> list[sqlite3.Row]:
                 anio,
                 codigo
             FROM convocatorias
+            {filtro}
             ORDER BY anio DESC, numero, puesto
             """
         ).fetchall()

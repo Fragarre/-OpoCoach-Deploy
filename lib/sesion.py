@@ -12,12 +12,28 @@ Descripción:
 
 import streamlit as st
 
+from lib.repositorio import convocatoria_esta_activa
+
 
 CLAVE_CONVOCATORIA_ID = "convocatoria_id"
 
 
 def obtener_convocatoria_id() -> int | None:
-    return st.session_state.get(CLAVE_CONVOCATORIA_ID)
+    convocatoria_id = st.session_state.get(CLAVE_CONVOCATORIA_ID)
+    if convocatoria_id is None:
+        return None
+
+    try:
+        convocatoria_id = int(convocatoria_id)
+    except (TypeError, ValueError):
+        borrar_convocatoria_id()
+        return None
+
+    if not convocatoria_esta_activa(convocatoria_id):
+        borrar_convocatoria_id()
+        return None
+
+    return convocatoria_id
 
 
 def establecer_convocatoria_id(convocatoria_id: int) -> None:

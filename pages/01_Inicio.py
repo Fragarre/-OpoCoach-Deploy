@@ -32,7 +32,7 @@ st.title("Inicio")
 convocatorias = obtener_convocatorias()
 
 if not convocatorias:
-    st.error("No existen convocatorias en la base de datos.")
+    st.error("No existen convocatorias activas disponibles.")
     st.stop()
 
 convocatoria_actual_id = obtener_convocatoria_id()

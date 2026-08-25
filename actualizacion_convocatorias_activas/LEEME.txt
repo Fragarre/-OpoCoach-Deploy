@@ -1,0 +1,6 @@
+ACTUALIZACIÓN DE CONVOCATORIAS ACTIVAS
+
+1) OpoCoach Streamlit: ejecutar el instalador de OpoCoach_Streamlit desde la raíz de OpoCoach.
+2) OpoCoach-Web: ejecutar el instalador de OpoCoach_Web desde la raíz de OpoCoach-Web.
+
+Los instaladores verifican hashes de los archivos revisados, crean backup y no modifican bases de datos.
