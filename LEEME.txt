@@ -1,0 +1,13 @@
+OpoCoach - Materiales Streamlit FINAL
+
+COPIAR en la raíz de OpoCoach respetando las carpetas:
+
+pages/03_Materiales.py
+materiales/resumenes/catalogo_resumenes.json
+materiales/resumenes/[31 PDF]
+
+IMPORTANTE:
+- No modifica lib/materiales.py.
+- No modifica lib/pdf_materiales.py.
+- Conserva la pantalla 03_Materiales.py aportada por el usuario.
+- Sustituye únicamente el catálogo/resúmenes por el lote definitivo.

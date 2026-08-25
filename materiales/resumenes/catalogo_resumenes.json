@@ -1,0 +1,219 @@
+[
+  {
+    "norma_id": 1,
+    "norma": "CONSTITUCIÓN ESPAÑOLA DE 1978",
+    "fuente": "BOE-A-1978-31229",
+    "archivo": "0001_CONSTITUCI_N_ESPA_OLA_DE_1978.pdf",
+    "estado": "APROBADO"
+  },
+  {
+    "norma_id": 7,
+    "norma": "DECRETO 30/2025",
+    "fuente": "DOGV-2025-3226",
+    "archivo": "0007_DECRETO_30_2025.pdf",
+    "estado": "APROBADO"
+  },
+  {
+    "norma_id": 10,
+    "norma": "DECRETO 42/2019",
+    "fuente": "LOCAL-DOGV-DECRETO-42-2019",
+    "archivo": "0010_DECRETO_42_2019.pdf",
+    "estado": "NUEVO"
+  },
+  {
+    "norma_id": 12,
+    "norma": "DECRETO 54/2025",
+    "fuente": "LOCAL-DOGV-DECRETO-54-2025",
+    "archivo": "0012_DECRETO_54_2025.pdf",
+    "estado": "NUEVO"
+  },
+  {
+    "norma_id": 13,
+    "norma": "decreto 76 2026",
+    "fuente": "DOGV-2026-13821",
+    "archivo": "0013_decreto_76_2026.pdf",
+    "estado": "NUEVO"
+  },
+  {
+    "norma_id": 14,
+    "norma": "DECRETO 77/2019",
+    "fuente": "DOGV-CONSOLIDADO-D-2019-077",
+    "archivo": "0014_DECRETO_77_2019.pdf",
+    "estado": "NUEVO"
+  },
+  {
+    "norma_id": 20,
+    "norma": "LEY 1/2015",
+    "fuente": "BOE-A-2015-1952",
+    "archivo": "0020_LEY_1_2015.pdf",
+    "estado": "NUEVO"
+  },
+  {
+    "norma_id": 21,
+    "norma": "LEY 1/2022",
+    "fuente": "BOE-A-2022-8187",
+    "archivo": "0021_LEY_1_2022.pdf",
+    "estado": "NUEVO"
+  },
+  {
+    "norma_id": 30,
+    "norma": "LEY 19/2013",
+    "fuente": "BOE-A-2013-12887",
+    "archivo": "0030_LEY_19_2013.pdf",
+    "estado": "NUEVO"
+  },
+  {
+    "norma_id": 41,
+    "norma": "LEY 31/1995",
+    "fuente": "BOE-A-1995-24292",
+    "archivo": "0041_LEY_31_1995.pdf",
+    "estado": "NUEVO"
+  },
+  {
+    "norma_id": 42,
+    "norma": "LEY 38/2003",
+    "fuente": "BOE-A-2003-20977",
+    "archivo": "0042_LEY_38_2003.pdf",
+    "estado": "NUEVO"
+  },
+  {
+    "norma_id": 43,
+    "norma": "LEY 39/2015",
+    "fuente": "BOE-A-2015-10565",
+    "archivo": "0043_LEY_39_2015.pdf",
+    "estado": "APROBADO"
+  },
+  {
+    "norma_id": 10145,
+    "norma": "ley 4 2026 de 22 de julio",
+    "fuente": "DOGV-C-2026-25581",
+    "archivo": "10145_ley_4_2026_de_22_de_julio.pdf",
+    "estado": "NUEVO"
+  },
+  {
+    "norma_id": 45,
+    "norma": "LEY 4/2021",
+    "fuente": "BOE-A-2021-8880",
+    "archivo": "0045_LEY_4_2021.pdf",
+    "estado": "NUEVO"
+  },
+  {
+    "norma_id": 46,
+    "norma": "LEY 4/2023",
+    "fuente": "BOE-A-2023-5366",
+    "archivo": "0046_LEY_4_2023.pdf",
+    "estado": "NUEVO"
+  },
+  {
+    "norma_id": 47,
+    "norma": "LEY 40/2015",
+    "fuente": "BOE-A-2015-10566",
+    "archivo": "0047_LEY_40_2015.pdf",
+    "estado": "NUEVO"
+  },
+  {
+    "norma_id": 49,
+    "norma": "LEY 5/1983",
+    "fuente": "BOE-A-1984-3460",
+    "archivo": "0049_LEY_5_1983.pdf",
+    "estado": "NUEVO"
+  },
+  {
+    "norma_id": 51,
+    "norma": "LEY 53/1984",
+    "fuente": "BOE-A-1985-151",
+    "archivo": "0051_LEY_53_1984.pdf",
+    "estado": "NUEVO"
+  },
+  {
+    "norma_id": 57,
+    "norma": "ley 6 2025 de 30 de mayo",
+    "fuente": "BOE-A-2025-11960",
+    "archivo": "0057_ley_6_2025_de_30_de_mayo.pdf",
+    "estado": "NUEVO"
+  },
+  {
+    "norma_id": 52,
+    "norma": "LEY 6/1985",
+    "fuente": "BOE-A-1985-18239",
+    "archivo": "0052_LEY_6_1985.pdf",
+    "estado": "NUEVO"
+  },
+  {
+    "norma_id": 62,
+    "norma": "LEY 9/2003",
+    "fuente": "BOE-A-2003-9334",
+    "archivo": "0062_LEY_9_2003.pdf",
+    "estado": "NUEVO"
+  },
+  {
+    "norma_id": 63,
+    "norma": "LEY 9/2017",
+    "fuente": "BOE-A-2017-12902",
+    "archivo": "0063_LEY_9_2017.pdf",
+    "estado": "NUEVO"
+  },
+  {
+    "norma_id": 65,
+    "norma": "LEY_ORGANICA 1/2004",
+    "fuente": "BOE-A-2004-21760",
+    "archivo": "0065_LEY_ORGANICA_1_2004.pdf",
+    "estado": "NUEVO"
+  },
+  {
+    "norma_id": 67,
+    "norma": "LEY_ORGANICA 2/1982",
+    "fuente": "BOE-A-1982-11584",
+    "archivo": "0067_LEY_ORGANICA_2_1982.pdf",
+    "estado": "NUEVO"
+  },
+  {
+    "norma_id": 71,
+    "norma": "LEY_ORGANICA 3/2007",
+    "fuente": "BOE-A-2007-6115",
+    "archivo": "0071_LEY_ORGANICA_3_2007.pdf",
+    "estado": "NUEVO"
+  },
+  {
+    "norma_id": 72,
+    "norma": "LEY_ORGANICA 3/2018",
+    "fuente": "BOE-A-2018-16673",
+    "archivo": "0072_LEY_ORGANICA_3_2018.pdf",
+    "estado": "NUEVO"
+  },
+  {
+    "norma_id": 73,
+    "norma": "LEY_ORGANICA 5/1982",
+    "fuente": "BOE-A-1982-17235",
+    "archivo": "0073_LEY_ORGANICA_5_1982.pdf",
+    "estado": "NUEVO"
+  },
+  {
+    "norma_id": 1281,
+    "norma": "orden 19 2013 de 3 de diciembre",
+    "fuente": "LOCAL-DOGV-ORDEN-19-2013",
+    "archivo": "1281_orden_19_2013_de_3_de_diciembre.pdf",
+    "estado": "NUEVO"
+  },
+  {
+    "norma_id": 80,
+    "norma": "REAL_DECRETO_LEGISLATIVO 5/2015",
+    "fuente": "BOE-A-2015-11719",
+    "archivo": "0080_REAL_DECRETO_LEGISLATIVO_5_2015.pdf",
+    "estado": "NUEVO"
+  },
+  {
+    "norma_id": 83,
+    "norma": "TRATADO DE FUNCIONAMIENTO DE LA UNIÓN EUROPEA",
+    "fuente": "DOUE-C-2010-083-TFUE",
+    "archivo": "0083_TRATADO_DE_FUNCIONAMIENTO_DE_LA_UNI_N_EUROPEA.pdf",
+    "estado": "NUEVO"
+  },
+  {
+    "norma_id": 84,
+    "norma": "TRATADO DE LA UNIÓN EUROPEA",
+    "fuente": "DOUE-C-2010-083-TUE",
+    "archivo": "0084_TRATADO_DE_LA_UNI_N_EUROPEA.pdf",
+    "estado": "NUEVO"
+  }
+]
