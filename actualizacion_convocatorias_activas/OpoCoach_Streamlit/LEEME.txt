@@ -1,3 +1,0 @@
-Ejecutar desde la raíz del proyecto:
-
-python "<ruta al paquete>/OpoCoach_Streamlit/instalar.py" --root .
